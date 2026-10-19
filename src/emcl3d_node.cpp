@@ -104,6 +104,8 @@ public:
     initial_stamp_(0, 0, get_clock()->get_clock_type())
   {
     config_.num_particles = integer("num_particles", 500, 2, 1000000);
+    config_.num_threads = integer(
+      "num_threads", 0, std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
     config_.random_seed = static_cast<unsigned>(integer(
       "random_seed", 1, 0, std::numeric_limits<int>::max()));
     config_.resample_ess_ratio = number("resample_ess_ratio", 0.5, 0.0, 1.0, true);

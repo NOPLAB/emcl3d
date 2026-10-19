@@ -18,6 +18,7 @@ struct Particle {
 };
 struct Config {
   int num_particles = 500;
+  int num_threads = 0;  // <= 0 uses all available CPU cores.
   unsigned random_seed = 1;
   double resample_ess_ratio = 0.5;
   double sigma_hit = 0.3, z_hit = 0.95, z_random = 0.05;
@@ -33,6 +34,8 @@ class Map {
 public:
   Map();
   ~Map();
+  // Load before sharing; concurrent distance/contains queries are read-only.
+  // Do not call load concurrently with queries.
   void load(const std::string &path, double voxel_size);
   double distance(const Eigen::Vector3d &point) const;
   bool contains(const Eigen::Vector3d &point, double margin) const;

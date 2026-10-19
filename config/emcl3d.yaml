@@ -30,6 +30,8 @@ emcl3d:
     # Diagonal covariance, metres squared and radians squared.
     initial_variance: [1.0, 1.0, 1.0, 0.1, 0.1, 0.5]
     num_particles: 500
+    # Likelihood workers: <= 0 uses all available CPU cores; 1 runs serially.
+    num_threads: 0
     random_seed: 1
     resample_ess_ratio: 0.5
     sigma_hit: 0.3

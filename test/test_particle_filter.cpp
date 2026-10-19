@@ -16,6 +16,7 @@ std::vector<Eigen::Vector3d> points() {
 emcl3d::Config config() {
   emcl3d::Config c;
   c.num_particles = 100;
+  c.num_threads = 1;
   c.min_valid_points = 4;
   c.translation_noise.setZero();
   c.rotation_noise.setZero();
@@ -103,5 +104,56 @@ TEST(Filter, ObservationReweightsAndResamplingRestoresUniformWeights) {
     total += p.weight;
   }
   EXPECT_NEAR(total, 1, 1e-12);
+}
+TEST(Filter, ThreadCountsPreserveLikelihoodResetAndRandomSequence) {
+  const auto m = map();
+  for (int threads : {2, 4, 0, -3}) {
+    for (bool reset : {false, true}) {
+      SCOPED_TRACE(threads);
+      SCOPED_TRACE(reset);
+      auto c = config();
+      c.num_particles = 137;
+      c.translation_noise.setConstant(0.03);
+      c.rotation_noise.setConstant(0.02);
+      c.resample_ess_ratio = reset ? 0 : 1;
+      c.alpha_threshold = reset ? 1 : 0;
+      c.inlier_distance = reset ? 0.0001 : 0.5;
+      c.reset_confirmation_updates = 2;
+      emcl3d::ParticleFilter serial(c, m);
+      c.num_threads = threads;
+      emcl3d::ParticleFilter parallel(c, m);
+      auto pose = emcl3d::Pose::Identity();
+      pose.translation() = Eigen::Vector3d(0.1, 0.05, -0.03);
+      const emcl3d::Matrix6 covariance = emcl3d::Matrix6::Identity() * 0.015;
+      serial.initialize(pose, covariance);
+      parallel.initialize(pose, covariance);
+      ASSERT_FALSE(serial.particles()[0].pose.matrix().isApprox(
+        serial.particles()[1].pose.matrix()));
+      auto delta = emcl3d::Pose::Identity();
+      delta.translation() = Eigen::Vector3d(0.01, -0.02, 0.005);
+      delta.linear() = Eigen::AngleAxisd(0.01, Eigen::Vector3d::UnitY()).toRotationMatrix();
+      bool saw_reset = false, saw_reweighting = false;
+      for (int update = 0; update < 4; ++update) {
+        const auto a = serial.update(delta, points());
+        const auto b = parallel.update(delta, points());
+        EXPECT_TRUE((a.pose.matrix().array() == b.pose.matrix().array()).all());
+        EXPECT_TRUE((a.covariance.array() == b.covariance.array()).all());
+        EXPECT_EQ(a.alpha, b.alpha);
+        EXPECT_EQ(a.ess, b.ess);
+        EXPECT_EQ(a.reset, b.reset);
+        saw_reset |= a.reset;
+        saw_reweighting |= a.ess < c.num_particles - 1;
+        for (size_t i = 0; i < serial.particles().size(); ++i) {
+          const auto &x = serial.particles()[i];
+          const auto &y = parallel.particles()[i];
+          EXPECT_TRUE((x.pose.matrix().array() == y.pose.matrix().array()).all());
+          EXPECT_EQ(x.weight, y.weight);
+          if (!reset) EXPECT_DOUBLE_EQ(x.weight, 1.0 / c.num_particles);
+        }
+      }
+      EXPECT_EQ(saw_reset, reset);
+      EXPECT_TRUE(saw_reweighting);
+    }
+  }
 }
 }

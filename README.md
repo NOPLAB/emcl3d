@@ -36,7 +36,7 @@ fraction of particles with enough inlier points, **not a convergence probability
 
 ## Build and start
 
-Use a ROS 2 Humble workspace with Eigen, PCL, and the ROS dependencies in
+Use a ROS 2 Humble workspace with Eigen, PCL, OpenMP, and the ROS dependencies in
 `package.xml` installed:
 
 ```bash
@@ -146,6 +146,15 @@ covariance values squared units.
 
 - `num_particles` must be 2 through 1,000,000. `random_seed` is a nonnegative
   signed 32-bit integer for reproducible runs.
+- `num_threads` defaults to `0`. Zero or any negative signed 32-bit value uses
+  all available CPU cores reported by the OpenMP runtime. A positive value
+  requests that many likelihood workers (`1` runs serially). Set it in the YAML
+  passed through `params_file` and restart the node. OpenMP runtime limits may
+  constrain the actual team size; no global threading settings are changed.
+  Only per-particle likelihood evaluation is parallel: random sampling,
+  normalization, estimation, and resampling retain serial order, giving identical
+  results across thread counts for the same inputs and seed. The loaded map is
+  immutable during queries; library callers must not reload it concurrently.
 - `z_hit` and `z_random` must each be in `(0, 1]`; neither may be zero.
   `min_inlier_ratio` must be in `(0, 1]`. `resample_ess_ratio` and
   `alpha_threshold` must be in `[0, 1]`.
