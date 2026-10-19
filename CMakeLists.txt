@@ -44,6 +44,7 @@ install(TARGETS mcl3d_core mcl3d_node
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
+install(FILES LICENSE COPYING DESTINATION share/${PROJECT_NAME})
 ament_export_include_directories(include)
 ament_export_libraries(mcl3d_core)
 ament_export_dependencies(Eigen3 PCL)

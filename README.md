@@ -1,5 +1,11 @@
 # mcl3d
 
+Copyright (C) 2026 nop <noplab90@gmail.com>
+
+Licensed under the GNU Lesser General Public License version 3 only
+(`LGPL-3.0-only`). See `LICENSE` for the LGPL terms and `COPYING` for
+the incorporated GPL version 3 terms.
+
 Standalone ROS 2 Humble 6DoF Monte Carlo localization against a PCD point map.
 The package owns `map -> odom`; an external odometry source owns
 `odom -> base_link`. It does not depend on GLIM or generate odometry.

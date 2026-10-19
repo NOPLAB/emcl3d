@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-only
 #define MCL3D_NO_MAIN
 #include "../src/emcl3d_node.cpp"
 #include <gtest/gtest.h>

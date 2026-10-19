@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-only
 #include "mcl3d/particle_filter.hpp"
 #include <pcl/common/common.h>
 #include <pcl/filters/voxel_grid.h>

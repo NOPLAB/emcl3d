@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
+// SPDX-License-Identifier: LGPL-3.0-only
 #pragma once
 
 #include <Eigen/Core>
