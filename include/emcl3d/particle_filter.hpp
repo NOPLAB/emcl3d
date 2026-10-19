@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace mcl3d {
+namespace emcl3d {
 using Pose = Eigen::Isometry3d;
 using Matrix6 = Eigen::Matrix<double, 6, 6>;
 struct Particle {
@@ -62,4 +62,4 @@ private:
   std::mt19937 random_;
   int bad_updates_ = 0;
 };
-}  // namespace mcl3d
+}  // namespace emcl3d

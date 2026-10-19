@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mcl3d LANGUAGES C CXX)
+project(emcl3d LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
@@ -15,37 +15,37 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(pcl_conversions REQUIRED)
-add_library(mcl3d_core src/map.cpp src/particle_filter.cpp)
-target_include_directories(mcl3d_core PUBLIC
+add_library(emcl3d_core src/map.cpp src/particle_filter.cpp)
+target_include_directories(emcl3d_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS})
-target_link_libraries(mcl3d_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
-target_compile_options(mcl3d_core PRIVATE -Wall -Wextra -Wpedantic)
-add_executable(mcl3d_node src/emcl3d_node.cpp)
-target_link_libraries(mcl3d_node mcl3d_core)
-ament_target_dependencies(mcl3d_node rclcpp geometry_msgs sensor_msgs std_msgs
+target_link_libraries(emcl3d_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES})
+target_compile_options(emcl3d_core PRIVATE -Wall -Wextra -Wpedantic)
+add_executable(emcl3d_node src/emcl3d_node.cpp)
+target_link_libraries(emcl3d_node emcl3d_core)
+ament_target_dependencies(emcl3d_node rclcpp geometry_msgs sensor_msgs std_msgs
   diagnostic_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions)
-target_compile_options(mcl3d_node PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(emcl3d_node PRIVATE -Wall -Wextra -Wpedantic)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   ament_add_gtest(test_particle_filter test/test_particle_filter.cpp)
-  target_link_libraries(test_particle_filter mcl3d_core)
+  target_link_libraries(test_particle_filter emcl3d_core)
   target_compile_definitions(test_particle_filter PRIVATE
     TEST_MAP_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/map.pcd")
   ament_add_gtest(test_ros_node test/test_ros_node.cpp TIMEOUT 60)
-  target_link_libraries(test_ros_node mcl3d_core)
+  target_link_libraries(test_ros_node emcl3d_core)
   ament_target_dependencies(test_ros_node rclcpp geometry_msgs sensor_msgs std_msgs
     diagnostic_msgs tf2 tf2_ros tf2_msgs tf2_geometry_msgs pcl_conversions)
   target_compile_definitions(test_ros_node PRIVATE
     TEST_MAP_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/map.pcd")
 endif()
-install(TARGETS mcl3d_core mcl3d_node
+install(TARGETS emcl3d_core emcl3d_node
   ARCHIVE DESTINATION lib LIBRARY DESTINATION lib RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 install(FILES LICENSE COPYING DESTINATION share/${PROJECT_NAME})
 ament_export_include_directories(include)
-ament_export_libraries(mcl3d_core)
+ament_export_libraries(emcl3d_core)
 ament_export_dependencies(Eigen3 PCL)
 ament_package()

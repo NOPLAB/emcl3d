@@ -1,13 +1,13 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
-#include "mcl3d/particle_filter.hpp"
+#include "emcl3d/particle_filter.hpp"
 #include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
 
-namespace mcl3d {
+namespace emcl3d {
 namespace {
 Eigen::Matrix3d rotation(const Eigen::Vector3d &v) {
   const double angle = v.norm();
@@ -166,4 +166,4 @@ Estimate ParticleFilter::update(
   if (result.ess < config_.resample_ess_ratio * particles_.size()) resample();
   return result;
 }
-}  // namespace mcl3d
+}  // namespace emcl3d

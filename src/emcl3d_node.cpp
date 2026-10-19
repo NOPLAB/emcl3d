@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
-#include <mcl3d/particle_filter.hpp>
+#include <emcl3d/particle_filter.hpp>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -30,7 +30,7 @@
 #include <utility>
 #include <vector>
 
-namespace mcl3d
+namespace emcl3d
 {
 namespace
 {
@@ -95,11 +95,11 @@ Matrix6 checked_covariance(Matrix6 covariance)
 }
 }  // namespace
 
-class Mcl3dNode : public rclcpp::Node
+class Emcl3dNode : public rclcpp::Node
 {
 public:
-  explicit Mcl3dNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
-  : Node("mcl3d", options), last_clock_(0, 0, get_clock()->get_clock_type()),
+  explicit Emcl3dNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
+  : Node("emcl3d", options), last_clock_(0, 0, get_clock()->get_clock_type()),
     last_stamp_(0, 0, get_clock()->get_clock_type()),
     initial_stamp_(0, 0, get_clock()->get_clock_type())
   {
@@ -572,7 +572,7 @@ private:
     message.header.stamp = now();
     diagnostic_msgs::msg::DiagnosticStatus entry;
     entry.name = std::string(get_fully_qualified_name()) + "/localization";
-    entry.hardware_id = "mcl3d";
+    entry.hardware_id = "emcl3d";
     entry.level = status_level_;
     entry.message = status_text_;
     const auto value = [&entry](const std::string & key, const std::string & text) {
@@ -626,19 +626,19 @@ private:
   uint8_t status_level_ = diagnostic_msgs::msg::DiagnosticStatus::WARN;
   std::string status_text_ = "Awaiting first supported observation";
 };
-}  // namespace mcl3d
+}  // namespace emcl3d
 
-#ifndef MCL3D_NO_MAIN
+#ifndef EMCL3D_NO_MAIN
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    auto node = std::make_shared<mcl3d::Mcl3dNode>();
+    auto node = std::make_shared<emcl3d::Emcl3dNode>();
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
     executor.spin();
   } catch (const std::exception & error) {
-    RCLCPP_FATAL(rclcpp::get_logger("mcl3d"), "%s", error.what());
+    RCLCPP_FATAL(rclcpp::get_logger("emcl3d"), "%s", error.what());
     rclcpp::shutdown();
     return 1;
   }

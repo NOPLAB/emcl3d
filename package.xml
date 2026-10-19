@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>mcl3d</name>
+  <name>emcl3d</name>
   <version>0.1.0</version>
   <description>Six degree of freedom Monte Carlo localization with expansion resetting.</description>
   <maintainer email="noplab90@gmail.com">nop</maintainer>

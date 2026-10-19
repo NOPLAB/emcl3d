@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
-#include "mcl3d/particle_filter.hpp"
+#include "emcl3d/particle_filter.hpp"
 #include <pcl/common/common.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
@@ -8,7 +8,7 @@
 #include <limits>
 #include <stdexcept>
 
-namespace mcl3d {
+namespace emcl3d {
 struct Map::Impl {
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud{new pcl::PointCloud<pcl::PointXYZ>};
   pcl::KdTreeFLANN<pcl::PointXYZ> tree;
@@ -53,4 +53,4 @@ bool Map::contains(const Eigen::Vector3d &p, double margin) const {
   return impl_->loaded && (p.array() >= impl_->minimum.array() - margin).all() &&
          (p.array() <= impl_->maximum.array() + margin).all();
 }
-}  // namespace mcl3d
+}  // namespace emcl3d

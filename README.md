@@ -1,4 +1,4 @@
-# mcl3d
+# emcl3d
 
 Copyright (C) 2026 nop <noplab90@gmail.com>
 
@@ -22,15 +22,15 @@ Use a ROS 2 Humble workspace with Eigen, PCL, and the ROS dependencies in
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select mcl3d --cmake-args -DCMAKE_BUILD_TYPE=Release
+colcon build --packages-select emcl3d --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
-ros2 launch mcl3d mcl3d.launch.xml \
+ros2 launch emcl3d emcl3d.launch.xml \
   map_path:=/absolute/path/map.pcd cloud_topic:=/deskewed_points
 ```
 
 For recorded data, add `use_sim_time:=true` and play the bag with `--clock`.
 `params_file:=/absolute/path/settings.yaml` replaces the default configuration.
-The launch file is XML and starts executable `mcl3d_node`.
+The launch file is XML and starts executable `emcl3d_node`.
 
 The map must contain finite XYZ points expressed in `map_frame`; its coordinates
 and the cloud coordinates must use metres. A missing, unreadable, or empty map
@@ -120,7 +120,7 @@ expansion resets since node startup.
 
 ## Parameters
 
-`config/mcl3d.yaml` lists every application parameter with usable defaults except
+`config/emcl3d.yaml` lists every application parameter with usable defaults except
 the required map path. Parameters are read at startup; restart to change them.
 Lengths are metres, angles radians, noise vectors standard deviations, and
 covariance values squared units.
@@ -146,6 +146,6 @@ covariance values squared units.
 Run package tests after building:
 
 ```bash
-colcon test --packages-select mcl3d --event-handlers console_direct+
+colcon test --packages-select emcl3d --event-handlers console_direct+
 colcon test-result --verbose
 ```

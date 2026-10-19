@@ -1,6 +1,6 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
-#define MCL3D_NO_MAIN
+#define EMCL3D_NO_MAIN
 #include "../src/emcl3d_node.cpp"
 #include <gtest/gtest.h>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
@@ -17,7 +17,7 @@ protected:
   static void TearDownTestSuite() { rclcpp::shutdown(); }
   void SetUp() override {
     rclcpp::NodeOptions options;
-    options.arguments({"--ros-args", "-r", "__ns:=/mcl3d_test"});
+    options.arguments({"--ros-args", "-r", "__ns:=/emcl3d_test"});
     options.parameter_overrides({
       {"map_path", std::string(TEST_MAP_PATH)}, {"num_particles", 20},
       {"min_valid_points", 4}, {"scan_voxel_size", 0.01},
@@ -26,8 +26,8 @@ protected:
       {"initial_variance", std::vector<double>(6, 0.0)},
       {"translation_noise", std::vector<double>(3, 0.0)},
       {"rotation_noise", std::vector<double>(3, 0.0)}});
-    localization = std::make_shared<mcl3d::Mcl3dNode>(options);
-    driver = std::make_shared<rclcpp::Node>("driver", "/mcl3d_test");
+    localization = std::make_shared<emcl3d::Emcl3dNode>(options);
+    driver = std::make_shared<rclcpp::Node>("driver", "/emcl3d_test");
     cloud_pub = driver->create_publisher<sensor_msgs::msg::PointCloud2>(
       "points", rclcpp::SensorDataQoS());
     executor.add_node(localization);
@@ -82,7 +82,7 @@ protected:
       graph->check_and_clear();
     }
   }
-  std::shared_ptr<mcl3d::Mcl3dNode> localization;
+  std::shared_ptr<emcl3d::Emcl3dNode> localization;
   std::shared_ptr<rclcpp::Node> driver;
   rclcpp::executors::SingleThreadedExecutor executor;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub;

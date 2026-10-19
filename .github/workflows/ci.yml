@@ -30,7 +30,7 @@ jobs:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          path: src/mcl3d
+          path: src/emcl3d
           persist-credentials: false
 
       - name: Install dependencies
@@ -48,14 +48,14 @@ jobs:
       - name: Build
         run: |
           source /opt/ros/"$ROS_DISTRO"/setup.bash
-          colcon build --packages-select mcl3d --executor sequential \
+          colcon build --packages-select emcl3d --executor sequential \
             --event-handlers console_direct+ \
             --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 
       - name: Test
         run: |
           source install/setup.bash
-          colcon test --packages-select mcl3d \
+          colcon test --packages-select emcl3d \
             --event-handlers console_direct+ \
             --return-code-on-test-failure
 
@@ -66,4 +66,4 @@ jobs:
       - name: Check installed launch file
         run: |
           source install/setup.bash
-          ros2 launch mcl3d mcl3d.launch.xml --show-args
+          ros2 launch emcl3d emcl3d.launch.xml --show-args
