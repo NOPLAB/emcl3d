@@ -1,0 +1,47 @@
+mcl3d:
+  ros__parameters:
+    # Supply map_path through the launch argument or a parameter override.
+    map_path: ""
+    map_frame: map
+    odom_frame: odom
+    base_frame: base_link
+    cloud_topic: /points
+    publish_tf: true
+
+    # Input must already be deskewed to header.stamp.
+    # Both TF lookups use this exact stamp, never the latest transform.
+    max_cloud_age: 1.0
+    future_tolerance: 0.1
+    tf_wait_timeout: 0.3
+    # Diagnostics warn if any covariance principal-axis standard deviation exceeds these.
+    max_position_stddev: 2.0
+    max_rotation_stddev: 0.5
+    map_voxel_size: 0.2
+    scan_voxel_size: 0.2
+    # Sensor-frame Euclidean range limits, applied before extrinsic transform.
+    min_range: 0.0
+    max_range: 100.0
+    max_input_points: 2000000
+    max_eval_points: 2000
+    min_valid_points: 20
+
+    # [x, y, z, roll, pitch, yaw], metres and radians; rotations are Rz Ry Rx.
+    initial_pose: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    # Diagonal covariance, metres squared and radians squared.
+    initial_variance: [1.0, 1.0, 1.0, 0.1, 0.1, 0.5]
+    num_particles: 500
+    random_seed: 1
+    resample_ess_ratio: 0.5
+    sigma_hit: 0.3
+    z_hit: 0.95
+    z_random: 0.05
+    likelihood_temperature: 10.0
+    inlier_distance: 0.5
+    min_inlier_ratio: 0.3
+    alpha_threshold: 0.5
+    reset_confirmation_updates: 3
+    # Axis-wise standard deviations, not variances.
+    translation_noise: [0.1, 0.1, 0.1]
+    rotation_noise: [0.1, 0.1, 0.1]
+    expansion_translation: [0.2, 0.2, 0.2]
+    expansion_rotation: [0.1, 0.1, 0.1]

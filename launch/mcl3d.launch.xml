@@ -1,0 +1,12 @@
+<launch>
+  <arg name="map_path" description="Absolute path to the PCD map in map_frame"/>
+  <arg name="params_file" default="$(find-pkg-share mcl3d)/config/mcl3d.yaml"/>
+  <arg name="cloud_topic" default="/points"/>
+  <arg name="use_sim_time" default="false"/>
+  <node pkg="mcl3d" exec="mcl3d_node" name="mcl3d" output="screen">
+    <param from="$(var params_file)"/>
+    <param name="map_path" value="$(var map_path)"/>
+    <param name="cloud_topic" value="$(var cloud_topic)"/>
+    <param name="use_sim_time" value="$(var use_sim_time)"/>
+  </node>
+</launch>
