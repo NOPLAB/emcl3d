@@ -6,6 +6,25 @@ Licensed under the GNU Lesser General Public License version 3 only
 (`LGPL-3.0-only`). See `LICENSE` for the LGPL terms and `COPYING` for
 the incorporated GPL version 3 terms.
 
+## Reference implementation and attribution
+
+The Monte Carlo localization and expansion-resetting design was developed with
+reference to [CIT-Autonomous-Robot-Lab/emcl2_ros2](https://github.com/CIT-Autonomous-Robot-Lab/emcl2_ros2),
+at commit `3eacea2dc70d9d29eb0d501d01eb5df001814776`.
+The reference source credits:
+
+> Copyright (C) 2022 Ryuichi Ueda <ryuichiueda@gmail.com>
+
+The inspected upstream `COPYING` contains the GNU LGPL version 3 text, while
+`package.xml` declares `LGPL` without a version. All inspected C++ headers
+and implementations carry `LGPL-3.0-or-later` SPDX identifiers except
+`src/LikelihoodFieldMap.cpp`, which carries `BSD-3-Clause`.
+`include/emcl2/emcl2_node.h` also notes that some lines originate from AMCL
+under the LGPL. These are upstream file-specific notices; they are not
+replaced by emcl3d's `LGPL-3.0-only` declaration or its author attribution.
+
+## Overview
+
 Standalone ROS 2 Humble 6DoF Monte Carlo localization against a PCD point map.
 The package owns `map -> odom`; an external odometry source owns
 `odom -> base_link`. It does not depend on GLIM or generate odometry.
