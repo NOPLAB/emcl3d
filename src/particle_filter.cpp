@@ -6,6 +6,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <omp.h>
 
 namespace emcl3d {
 namespace {
@@ -20,6 +21,7 @@ ParticleFilter::ParticleFilter(Config config, std::shared_ptr<const Map> map)
   if (!map_ || config_.num_particles < 2 || config_.min_valid_points < 1 ||
       config_.reset_confirmation_updates < 1)
     throw std::invalid_argument("Invalid particle filter configuration");
+  if (config_.num_threads <= 0) config_.num_threads = omp_get_num_procs();
   for (double value : {config_.resample_ess_ratio, config_.min_inlier_ratio,
                        config_.alpha_threshold})
     if (!std::isfinite(value) || value < 0 || value > 1)
@@ -57,9 +59,13 @@ void ParticleFilter::initialize(const Pose &pose, const Matrix6 &covariance) {
   bad_updates_ = 0;
 }
 double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
-  std::vector<double> logs;
+  std::vector<double> logs(particles_.size());
   int good = 0;
-  for (const auto &p : particles_) {
+  // Each worker owns one score. Only the integer inlier count is reduced;
+  // normalization and all random draws retain their serial order.
+  #pragma omp parallel for schedule(static) num_threads(config_.num_threads) reduction(+:good)
+  for (size_t i = 0; i < particles_.size(); ++i) {
+    const auto &p = particles_[i];
     double score = 0;
     int inliers = 0;
     for (const auto &point : points) {
@@ -70,8 +76,8 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
           config_.z_random);
     }
     good += double(inliers) / points.size() >= config_.min_inlier_ratio;
-    logs.push_back(std::log(std::max(p.weight, std::numeric_limits<double>::min())) +
-                   config_.likelihood_temperature * score / points.size());
+    logs[i] = std::log(std::max(p.weight, std::numeric_limits<double>::min())) +
+              config_.likelihood_temperature * score / points.size();
   }
   const double maximum = *std::max_element(logs.begin(), logs.end());
   double sum = 0;

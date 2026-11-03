@@ -19,7 +19,7 @@ protected:
     rclcpp::NodeOptions options;
     options.arguments({"--ros-args", "-r", "__ns:=/emcl3d_test"});
     options.parameter_overrides({
-      {"map_path", std::string(TEST_MAP_PATH)}, {"num_particles", 20},
+      {"map_path", std::string(TEST_MAP_PATH)}, {"num_particles", 20}, {"num_threads", 1},
       {"min_valid_points", 4}, {"scan_voxel_size", 0.01},
       {"map_voxel_size", 0.01}, {"max_cloud_age", 30.0},
       {"future_tolerance", 10.0},
@@ -88,6 +88,20 @@ protected:
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub;
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> broadcaster;
 };
+TEST_F(RosNodeTest, ThreadCountParameterAcceptsAutomaticAndExplicitModes) {
+  for (int threads : {0, -3, 1, 4}) {
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+      {"map_path", std::string(TEST_MAP_PATH)}, {"num_threads", threads}});
+    const auto node = std::make_shared<emcl3d::Emcl3dNode>(options);
+    EXPECT_EQ(node->get_parameter("num_threads").as_int(), threads);
+  }
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({
+    {"map_path", std::string(TEST_MAP_PATH)},
+    {"num_threads", int64_t(std::numeric_limits<int>::max()) + 1}});
+  EXPECT_THROW(std::make_shared<emcl3d::Emcl3dNode>(options), std::invalid_argument);
+}
 TEST_F(RosNodeTest, PublishesObservationStampedSixDimensionalPose) {
   std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> promise;
   auto future = promise.get_future();
