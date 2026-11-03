@@ -321,6 +321,8 @@ private:
       support_ratio_ = 0.0;
       status(diagnostic_msgs::msg::DiagnosticStatus::WARN,
         "Initial pose accepted; awaiting supported observation");
+      publish_estimate(stamp, odom);
+      publish_diagnostics();
     } catch (const std::exception & error) {
       status(diagnostic_msgs::msg::DiagnosticStatus::WARN,
         std::string("Rejected initialpose: ") + error.what());

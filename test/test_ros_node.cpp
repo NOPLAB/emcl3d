@@ -126,6 +126,68 @@ TEST_F(RosNodeTest, PublishesObservationStampedSixDimensionalPose) {
   EXPECT_EQ(correction.header.stamp, message.header.stamp);
   EXPECT_NEAR(correction.transform.translation.z, -0.7, 1e-10);
 }
+TEST_F(RosNodeTest, PublishesOutOfMapInitialPoseWithoutAnotherCloud) {
+  std::promise<void> ready_promise;
+  auto ready = ready_promise.get_future();
+  std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> pose_promise;
+  auto pose_future = pose_promise.get_future();
+  std::promise<geometry_msgs::msg::TransformStamped> tf_promise;
+  auto tf_future = tf_promise.get_future();
+  bool observed = false, received_pose = false, received_tf = false;
+  auto pose_sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped &message) {
+      if (!observed) {
+        observed = true;
+        ready_promise.set_value();
+      }
+      if (!received_pose && message.pose.pose.position.x == 1000.0) {
+        received_pose = true;
+        pose_promise.set_value(message);
+      }
+    });
+  auto tf_sub = driver->create_subscription<tf2_msgs::msg::TFMessage>(
+    "/tf", 10, [&](const tf2_msgs::msg::TFMessage &message) {
+      for (const auto &transform : message.transforms) {
+        if (!received_tf && transform.header.frame_id == "map" &&
+            transform.child_frame_id == "odom" && transform.transform.translation.x == 1000.0) {
+          received_tf = true;
+          tf_promise.set_value(transform);
+        }
+      }
+    });
+  auto initial_pub = driver->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "initialpose", 1);
+  discover(pose_sub);
+  discover(tf_sub);
+  const auto graph = driver->get_graph_event();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while (initial_pub->get_subscription_count() == 0) {
+    ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+    driver->wait_for_graph_change(graph, deadline - std::chrono::steady_clock::now());
+    graph->check_and_clear();
+  }
+  cloud_pub->publish(cloud());
+  await(ready);
+  ASSERT_TRUE(observed);
+  geometry_msgs::msg::PoseWithCovarianceStamped initial;
+  initial.header.frame_id = "map";
+  initial.header.stamp = driver->now();
+  initial.pose.pose.position.x = 1000.0;
+  initial.pose.pose.position.y = -1000.0;
+  initial.pose.pose.orientation.w = 1.0;
+  initial_pub->publish(initial);
+  await(pose_future);
+  ASSERT_TRUE(received_pose);
+  const auto pose = pose_future.get();
+  EXPECT_EQ(pose.header.stamp, initial.header.stamp);
+  EXPECT_DOUBLE_EQ(pose.pose.pose.position.y, -1000.0);
+  await(tf_future);
+  ASSERT_TRUE(received_tf);
+  const auto transform = tf_future.get();
+  EXPECT_EQ(transform.header.stamp, initial.header.stamp);
+  EXPECT_DOUBLE_EQ(transform.transform.translation.y, -1000.0);
+  EXPECT_NEAR(transform.transform.translation.z, -0.7, 1e-10);
+}
 TEST_F(RosNodeTest, RejectsMalformedStorageWithoutPublishingPose) {
   std::promise<void> promise;
   auto future = promise.get_future();

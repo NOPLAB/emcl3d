@@ -108,18 +108,21 @@ components use fixed reference-frame axes, consistent with ROS pose covariance.
 The node requires stamped odometry at initialization, rejects clouds preceding
 that stamp, and integrates motion from the initial pose's instant to the next
 cloud. Missing TF or invalid pose/covariance rejects the entire initialization.
+An accepted manual pose is published immediately, including `map -> odom`,
+without requiring a cloud or map support. This also applies outside map bounds;
+the diagnostic remains a warning until an observation confirms support.
 
 | Output | Type | Frame and stamp |
 | --- | --- | --- |
-| `mcl_pose` | `geometry_msgs/PoseWithCovarianceStamped` | `map_frame`, accepted cloud stamp; full 6x6 covariance. |
+| `mcl_pose` | `geometry_msgs/PoseWithCovarianceStamped` | `map_frame`, accepted cloud or manual initialization stamp; full 6x6 covariance. |
 | `particlecloud` | `geometry_msgs/PoseArray` | `map_frame`, same stamp; all particles. |
 | `alpha` | `std_msgs/Float64` | Same update, but this message type has no header. |
 | `diagnostics` | `diagnostic_msgs/DiagnosticArray` | Current ROS time; includes last accepted observation stamp, alpha, ESS, support ratio, reset flag, and counters. |
-| TF `map_frame -> odom_frame` | `geometry_msgs/TransformStamped` | Accepted cloud stamp; `map_from_base * inverse(odom_from_base)`. |
+| TF `map_frame -> odom_frame` | `geometry_msgs/TransformStamped` | Accepted cloud or manual initialization stamp; `map_from_base * inverse(odom_from_base)`. |
 
 Set `publish_tf: false` when another process owns `map -> odom`. Output pose and
-TF are observation-stamped, not extrapolated or future-dated, and are published
-only on accepted observations. A predicted or weakly supported estimate may
+TF use the observation or manual initialization stamp, not extrapolated or
+future-dated stamps. A predicted or weakly supported estimate may
 still be published; consumers must inspect diagnostics.
 
 An OK diagnostic requires current-point inlier support, alpha above its
