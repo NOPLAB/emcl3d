@@ -4,14 +4,17 @@
 #include <pcl/common/common.h>
 #include <pcl/filters/voxel_grid.h>
 #include <pcl/io/pcd_io.h>
-#include <pcl/kdtree/kdtree_flann.h>
+#include <flann/algorithms/kdtree_single_index.h>
+#include <flann/algorithms/dist.h>
 #include <limits>
 #include <stdexcept>
 
 namespace emcl3d {
 struct Map::Impl {
   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud{new pcl::PointCloud<pcl::PointXYZ>};
-  pcl::KdTreeFLANN<pcl::PointXYZ> tree;
+  using Tree = flann::KDTreeSingleIndex<flann::L2_Simple<float>>;
+  std::vector<float> coordinates;
+  std::unique_ptr<Tree> tree;
   Eigen::Vector3d minimum, maximum;
   bool loaded = false;
 };
@@ -37,17 +40,27 @@ void Map::load(const std::string &path, double voxel_size) {
   pcl::getMinMax3D(*next->cloud, low, high);
   next->minimum = low.getVector3fMap().cast<double>();
   next->maximum = high.getVector3fMap().cast<double>();
-  next->tree.setInputCloud(next->cloud);
+  next->coordinates.reserve(next->cloud->size() * 3);
+  for (const auto &p : *next->cloud)
+    for (float value : {p.x, p.y, p.z}) next->coordinates.push_back(value);
+  // Keep PCL's float XYZ metric and 15-point exact KD-tree leaves, but avoid
+  // its per-query conversion, temporary vectors, and result-index mapping.
+  next->tree = std::make_unique<Impl::Tree>(
+      flann::Matrix<float>(next->coordinates.data(), next->cloud->size(), 3),
+      flann::KDTreeSingleIndexParams(15));
+  next->tree->buildIndex();
   next->loaded = true;
   impl_ = std::move(next);
 }
 double Map::distance(const Eigen::Vector3d &p) const {
   if (!impl_->loaded) throw std::logic_error("Map is not loaded");
-  std::vector<int> indices(1);
-  std::vector<float> distances(1);
-  if (impl_->tree.nearestKSearch(pcl::PointXYZ(p.x(), p.y(), p.z()), 1, indices, distances) != 1)
+  const float query[] = {float(p.x()), float(p.y()), float(p.z())};
+  thread_local flann::KNNSimpleResultSet<float> result(1);
+  result.clear();
+  impl_->tree->findNeighbors(result, query, flann::SearchParams(-1, 0));
+  if (!result.full())
     return std::numeric_limits<double>::infinity();
-  return std::sqrt(distances[0]);
+  return std::sqrt(result.worstDist());
 }
 bool Map::contains(const Eigen::Vector3d &p, double margin) const {
   return impl_->loaded && (p.array() >= impl_->minimum.array() - margin).all() &&

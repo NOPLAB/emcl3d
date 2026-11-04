@@ -144,11 +144,16 @@ Estimate ParticleFilter::update(
   }
   double alpha = evaluate(points);
   bool supported = false;
-  for (const auto &p : particles_) {
-    size_t inside = 0;
-    for (const auto &point : points)
-      inside += map_->contains(p.pose * point, config_.inlier_distance);
-    supported |= double(inside) / points.size() >= config_.min_inlier_ratio;
+  if (alpha < config_.alpha_threshold) {
+    for (const auto &p : particles_) {
+      size_t inside = 0;
+      for (const auto &point : points)
+        inside += map_->contains(p.pose * point, config_.inlier_distance);
+      if (double(inside) / points.size() >= config_.min_inlier_ratio) {
+        supported = true;
+        break;
+      }
+    }
   }
   bad_updates_ = supported && alpha < config_.alpha_threshold ? bad_updates_ + 1 : 0;
   const bool reset = bad_updates_ >= config_.reset_confirmation_updates;
