@@ -35,3 +35,35 @@ checksumは比較の補助であり、精度の証明ではない。
 
 本調査で使用した`map_tsudanuma.pcd`はワークスペース直下の外部データで、
 このリポジトリには同梱しない。再実行時は同じPCDを別途用意して絶対パスを渡す。
+
+## GPUとの比較
+
+Vulkanの開発依存はCPU専用ビルドに含めない。GPUを含める場合だけ導入し、
+別のビルドディレクトリを使う。
+
+```bash
+sudo apt-get install libvulkan-dev glslang-tools
+cmake -S . -B .bench/vulkan -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DBUILD_BENCHMARKS=ON -DBUILD_TESTING=ON -DEMCL3D_ENABLE_VULKAN=ON
+cmake --build .bench/vulkan -j 4
+taskset -c 0,2 .bench/vulkan/benchmark_core /absolute/path/map.pcd cpu
+taskset -c 0,2 .bench/vulkan/benchmark_core /absolute/path/map.pcd vulkan
+```
+
+末尾の選択を省略するとCPU。出力には選択したバックエンドと実デバイス名を含む。
+GPU更新時間には、問い合わせ準備、転送、GPU探索、同期・読み戻し、CPU側の
+尤度計算・正規化・推定を含む。地図ロードと初回パイプライン生成は従来どおり除外する。
+固定問い合わせの`phase=contains/distance`はスカラーCPU処理なので、
+GPU実行を選択しても`execution=cpu`と明示する。
+
+Vulkan有効時の`ctest`には実GPUを使う距離・フィルタ更新・丸め境界のテストが加わる。
+ソフトウェアVulkanをGPU性能として扱わない。ドライバ、GPU名、CPU affinity、
+同じ地図・点数・粒子数を記録し、CPUとGPUを同じ環境で比較する。
+
+CPU専用の依存分離は、Vulkan検索を禁止したビルドでも確認できる。
+
+```bash
+cmake -S . -B .bench/cpu -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DEMCL3D_ENABLE_VULKAN=OFF -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=TRUE \
+  -DBUILD_TESTING=ON -DBUILD_BENCHMARKS=ON
+```

@@ -74,6 +74,19 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
       config_.z_hit * std::exp(-0.5 * omitted * omitted / variance) +
           config_.z_random != config_.z_random)
     squared_limit = std::numeric_limits<float>::max();
+  const bool gpu = map_->usesGpu();
+  if (gpu) {
+    queries_.resize(particles_.size() * points.size());
+    #pragma omp parallel for schedule(static) num_threads(config_.num_threads)
+    for (size_t i = 0; i < particles_.size(); ++i) {
+      for (size_t j = 0; j < points.size(); ++j) {
+        auto &query = queries_[i * points.size() + j];
+        query.head<3>() = (particles_[i].pose * points[j]).cast<float>();
+        query.w() = 0;
+      }
+    }
+    map_->squaredDistances(queries_, squared_limit, squared_distances_);
+  }
   int good = 0;
   // Each worker owns one score. Only the integer inlier count is reduced;
   // normalization and all random draws retain their serial order.
@@ -82,12 +95,20 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
     const auto &p = particles_[i];
     double score = 0;
     int inliers = 0;
-    for (const auto &point : points) {
-      const double d = map_->distance(p.pose * point, squared_limit);
+    const auto add_distance = [&](double d) {
       inliers += d < config_.inlier_distance;
       score += std::log(config_.z_hit *
           std::exp(-0.5 * d * d / (config_.sigma_hit * config_.sigma_hit)) +
           config_.z_random);
+    };
+    if (gpu) {
+      const size_t first = i * points.size();
+      for (size_t j = 0; j < points.size(); ++j)
+        // sqrt stays on CPU in float precision, as in the scalar map query.
+        add_distance(std::sqrt(squared_distances_[first + j]));
+    } else {
+      for (const auto &point : points)
+        add_distance(map_->distance(p.pose * point, squared_limit));
     }
     good += double(inliers) / points.size() >= config_.min_inlier_ratio;
     logs[i] = std::log(std::max(p.weight, std::numeric_limits<double>::min())) +

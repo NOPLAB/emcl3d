@@ -10,10 +10,13 @@
 #include <omp.h>
 
 int main(int argc, char **argv) {
-  if (argc != 2) return 2;
+  if (argc < 2 || argc > 3) return 2;
   omp_set_dynamic(0);
-  auto map = std::make_shared<emcl3d::Map>();
+  const std::string backend = argc == 3 ? argv[2] : "cpu";
+  auto map = std::make_shared<emcl3d::Map>(backend);
   map->load(argv[1], 0.2);
+  std::cout << "compute_backend=" << backend << " device=\"" << map->deviceName() << "\""
+            << std::endl;
   pcl::PointCloud<pcl::PointXYZ> cloud;
   if (pcl::io::loadPCDFile(argv[1], cloud) < 0) return 2;
   std::vector<Eigen::Vector3d> source;
@@ -44,6 +47,7 @@ int main(int argc, char **argv) {
         }
       }
       std::cout << "phase=" << (distances ? "distance" : "contains")
+                << " execution=cpu"
                 << " points=" << count << " ms="
                 << std::chrono::duration<double, std::milli>(
                    std::chrono::steady_clock::now() - start).count()

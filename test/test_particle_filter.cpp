@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
 #include "emcl3d/particle_filter.hpp"
+#include "map_fixture.hpp"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cmath>
@@ -26,6 +27,10 @@ emcl3d::Config config() {
   return c;
 }
 TEST(Map, DistanceBoundsAndMissingFile) {
+  EXPECT_THROW(emcl3d::Map("unknown"), std::invalid_argument);
+#ifndef EMCL3D_ENABLE_VULKAN
+  EXPECT_THROW(emcl3d::Map("vulkan"), std::runtime_error);
+#endif
   auto m = map();
   EXPECT_NEAR(m->distance({2,3,4}), 0, 1e-6);
   EXPECT_NEAR(m->distance({2,3,5}), 1, 1e-6);
@@ -37,24 +42,10 @@ TEST(Map, DistanceBoundsAndMissingFile) {
   EXPECT_THROW(m->load("nonexistent-emcl3d-map.pcd", 0.1), std::runtime_error);
 }
 TEST(Map, PackedSearchMatchesBruteForce) {
-  std::unique_ptr<FILE, decltype(&std::fclose)> file(std::tmpfile(), &std::fclose);
-  ASSERT_NE(file.get(), nullptr);
-  std::vector<Eigen::Vector3f> grid;
-  for (int x = 0; x < 8; ++x)
-    for (int y = 0; y < 8; ++y)
-      for (int z = 0; z < 8; ++z) {
-        if (x == 7 && y == 7 && z == 7) continue;
-        grid.emplace_back(x + 0.17f * ((y * 13 + z * 7) % 5),
-            y + 0.13f * ((x * 11 + z * 3) % 7), z + 0.19f * ((x * 5 + y * 3) % 3));
-      }
-  std::fprintf(file.get(),
-      "VERSION .7\nFIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
-      "WIDTH %zu\nHEIGHT 1\nVIEWPOINT 0 0 0 1 0 0 0\nPOINTS %zu\nDATA ascii\n",
-      grid.size(), grid.size());
-  for (const auto &p : grid) std::fprintf(file.get(), "%.9g %.9g %.9g\n", p.x(), p.y(), p.z());
-  ASSERT_EQ(std::fflush(file.get()), 0);
+  emcl3d::test::IrregularMapFile fixture;
+  const auto &grid = fixture.points;
   emcl3d::Map m;
-  m.load("/proc/self/fd/" + std::to_string(::fileno(file.get())), 0.01);
+  m.load(fixture.path(), 0.01);
   for (int i = 0; i < 256; ++i) {
     const Eigen::Vector3f query(0.49f * (i % 19) - 1,
         0.43f * ((i * 7) % 23) - 1, 0.37f * ((i * 11) % 29) - 1);

@@ -33,7 +33,7 @@ struct Config {
 };
 class Map {
 public:
-  Map();
+  explicit Map(const std::string &compute_backend = "cpu");
   ~Map();
   // Load before sharing; concurrent distance/contains queries are read-only.
   // Do not call load concurrently with queries.
@@ -41,6 +41,12 @@ public:
   // Search below the squared limit; omitted points return infinity.
   double distance(const Eigen::Vector3d &point,
       float squared_limit = std::numeric_limits<float>::max()) const;
+  // Batched XYZ queries use the selected backend; their fourth lane is ignored.
+  // Scalar diagnostics stay on CPU.
+  void squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
+      std::vector<float> &output) const;
+  bool usesGpu() const;
+  std::string deviceName() const;
   bool contains(const Eigen::Vector3d &point, double margin) const;
 private:
   struct Impl;
@@ -65,6 +71,8 @@ private:
   Config config_;
   std::shared_ptr<const Map> map_;
   std::vector<Particle> particles_;
+  std::vector<Eigen::Vector4f> queries_;
+  std::vector<float> squared_distances_;
   std::mt19937 random_;
   int bad_updates_ = 0;
 };
