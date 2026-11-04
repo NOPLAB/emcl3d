@@ -55,6 +55,60 @@ The map must contain finite XYZ points expressed in `map_frame`; its coordinates
 and the cloud coordinates must use metres. A missing, unreadable, or empty map
 fails startup. The map is voxelized once and remains static.
 
+### Optional Vulkan execution
+
+The default `EMCL3D_ENABLE_VULKAN=OFF` build does not discover Vulkan, compile shaders,
+or link the Vulkan loader. CPU dependencies remain those in `package.xml`.
+To include the optional backend, install its additional development dependencies:
+
+```bash
+sudo apt-get install libvulkan-dev glslang-tools
+colcon build --packages-select emcl3d --cmake-args \
+  -DCMAKE_BUILD_TYPE=Release -DEMCL3D_ENABLE_VULKAN=ON
+```
+
+Select `compute_backend: cpu` or `compute_backend: vulkan` in the YAML passed through
+`params_file`, then restart. The default is `cpu`, including in Vulkan-enabled builds.
+For direct execution:
+
+```bash
+ros2 run emcl3d emcl3d_node --ros-args \
+  -p map_path:=/absolute/path/map.pcd -p compute_backend:=vulkan -p num_threads:=2
+```
+
+An unknown backend, an uncompiled Vulkan backend, an unavailable hardware GPU,
+or an exceeded device buffer/dispatch limit fails explicitly. There is no silent
+CPU fallback. CPU software Vulkan devices are not accepted as GPU execution.
+A Vulkan-enabled binary still needs the Vulkan loader even when selecting CPU;
+use a CPU-only build when that dependency must be absent.
+
+The backend uses official Vulkan-Hpp bindings and embedded SPIR-V targeting Vulkan
+1.1. It requires four storage buffers and a 64-invocation compute workgroup, checked
+against the selected device. It does not require FP64, subgroups, ray tracing,
+or Vulkan 1.3 features. Map geometry remains static on the GPU; transformed queries
+are submitted in batches, not one dispatch per point. Scalar diagnostic queries
+remain on CPU. Square roots, double-precision likelihoods, normalization and random
+sampling retain their CPU implementation and order. GPU FP32 arithmetic is checked
+with numerical tolerances, not a cross-device bitwise-equality promise.
+
+GPU support depends on the GPU **and its installed driver**, not the CPU brand:
+
+| Hardware family | Driver requirement |
+| --- | --- |
+| Raspberry Pi 4/5 | Mesa V3DV with the V3D kernel driver. |
+| Rockchip/Mali | A supported PanVK or vendor Vulkan implementation; check the exact Mali model. |
+| Intel, NVIDIA, AMD | An installed Vulkan compute driver meeting the checked capabilities. |
+
+Pi generations and older Mali devices without hardware Vulkan are not supported
+by this backend; CPU execution remains available. Consult the
+[Mesa V3D](https://docs.mesa3d.org/drivers/v3d.html) and
+[Panfrost/PanVK](https://docs.mesa3d.org/drivers/panfrost.html) support tables.
+Library portability does not imply the same performance or memory capacity on each GPU.
+
+Vulkan-enabled package tests include real GPU dispatch/readback and require a hardware
+GPU. CI runs CPU tests on x86_64/ARM64 and separately compiles the GPU backend and
+validates its shader on both architectures; those compile jobs do not claim GPU execution.
+
 ## Input and TF contract
 
 | Input | Type | Contract |
@@ -154,10 +208,12 @@ covariance values squared units.
   requests that many likelihood workers (`1` runs serially). Set it in the YAML
   passed through `params_file` and restart the node. OpenMP runtime limits may
   constrain the actual team size; no global threading settings are changed.
-  Only per-particle likelihood evaluation is parallel: random sampling,
+  CPU workers parallelize query preparation and per-particle likelihoods: random sampling,
   normalization, estimation, and resampling retain serial order, giving identical
   results across thread counts for the same inputs and seed. The loaded map is
   immutable during queries; library callers must not reload it concurrently.
+- `compute_backend` defaults to `cpu`; `vulkan` requires the optional build and
+  a supported hardware GPU. This is a startup selection, not a dynamic parameter.
 - `z_hit` and `z_random` must each be in `(0, 1]`; neither may be zero.
   `min_inlier_ratio` must be in `(0, 1]`. `resample_ess_ratio` and
   `alpha_threshold` must be in `[0, 1]`.

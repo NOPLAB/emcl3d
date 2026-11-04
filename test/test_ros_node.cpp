@@ -102,6 +102,26 @@ TEST_F(RosNodeTest, ThreadCountParameterAcceptsAutomaticAndExplicitModes) {
     {"num_threads", int64_t(std::numeric_limits<int>::max()) + 1}});
   EXPECT_THROW(std::make_shared<emcl3d::Emcl3dNode>(options), std::invalid_argument);
 }
+TEST_F(RosNodeTest, ComputeBackendParameterSelectsExecutionAndRejectsUnavailableModes) {
+  for (const std::string backend : {"cpu", "unknown", "vulkan"}) {
+    SCOPED_TRACE(backend);
+    rclcpp::NodeOptions options;
+    options.parameter_overrides({
+      {"map_path", std::string(TEST_MAP_PATH)}, {"num_particles", 20},
+      {"num_threads", 1}, {"compute_backend", backend}});
+    if (backend == "unknown") {
+      EXPECT_THROW(std::make_shared<emcl3d::Emcl3dNode>(options), std::invalid_argument);
+    } else if (backend == "cpu") {
+      EXPECT_NO_THROW(std::make_shared<emcl3d::Emcl3dNode>(options));
+    } else {
+#ifdef EMCL3D_ENABLE_VULKAN
+      EXPECT_NO_THROW(std::make_shared<emcl3d::Emcl3dNode>(options));
+#else
+      EXPECT_THROW(std::make_shared<emcl3d::Emcl3dNode>(options), std::runtime_error);
+#endif
+    }
+  }
+}
 TEST_F(RosNodeTest, PublishesObservationStampedSixDimensionalPose) {
   std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> promise;
   auto future = promise.get_future();

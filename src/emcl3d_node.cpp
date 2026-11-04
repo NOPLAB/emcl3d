@@ -166,7 +166,7 @@ public:
 
     const auto map_path = declare_parameter<std::string>("map_path", "");
     require(!map_path.empty(), "map_path must name a PCD map in map_frame");
-    auto map = std::make_shared<Map>();
+    auto map = std::make_shared<Map>(declare_parameter<std::string>("compute_backend", "cpu"));
     map->load(map_path, number("map_voxel_size", 0.2, 0.0));
     map_ = map;
     filter_ = std::make_unique<ParticleFilter>(config_, map_);

@@ -14,8 +14,13 @@ concurrency:
 
 jobs:
   humble:
-    name: ROS 2 Humble build and test
-    runs-on: ubuntu-22.04
+    name: ${{ matrix.vulkan == 'OFF' && 'ROS 2 Humble build and test' || 'Vulkan compile' }} (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+        vulkan: ["OFF", "ON"]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     container: ros:humble-ros-base-jammy
     defaults:
@@ -26,6 +31,8 @@ jobs:
       ROS_LOCALHOST_ONLY: "1"
       MAKEFLAGS: -j2
       CMAKE_BUILD_PARALLEL_LEVEL: "2"
+      EMCL3D_VULKAN: ${{ matrix.vulkan }}
+      EMCL3D_DISABLE_VULKAN_DISCOVERY: ${{ matrix.vulkan == 'OFF' && 'ON' || 'OFF' }}
     steps:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -44,15 +51,25 @@ jobs:
           rosdep update --rosdistro "$ROS_DISTRO"
           rosdep install --from-paths src --ignore-src \
             --rosdistro "$ROS_DISTRO" -y
+          if [ "$EMCL3D_VULKAN" = ON ]; then
+            apt-get install -y --no-install-recommends libvulkan-dev glslang-tools
+          fi
 
       - name: Build
         run: |
           source /opt/ros/"$ROS_DISTRO"/setup.bash
           colcon build --packages-select emcl3d --executor sequential \
             --event-handlers console_direct+ \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_BENCHMARKS=ON \
+            -DEMCL3D_ENABLE_VULKAN="$EMCL3D_VULKAN" \
+            -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan="$EMCL3D_DISABLE_VULKAN_DISCOVERY"
+
+      - name: Validate portable compute shader
+        if: ${{ matrix.vulkan == 'ON' }}
+        run: spirv-val --target-env vulkan1.1 build/emcl3d/generated/map_distance.spv
 
       - name: Test
+        if: ${{ matrix.vulkan == 'OFF' }}
         run: |
           source install/setup.bash
           colcon test --packages-select emcl3d \
@@ -60,7 +77,7 @@ jobs:
             --return-code-on-test-failure
 
       - name: Report test results
-        if: ${{ always() }}
+        if: ${{ always() && matrix.vulkan == 'OFF' }}
         run: colcon test-result --verbose
 
       - name: Check installed launch file

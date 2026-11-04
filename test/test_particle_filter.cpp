@@ -1,7 +1,11 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
 #include "emcl3d/particle_filter.hpp"
+#include "map_fixture.hpp"
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
 
 namespace {
 std::shared_ptr<emcl3d::Map> map() {
@@ -23,12 +27,38 @@ emcl3d::Config config() {
   return c;
 }
 TEST(Map, DistanceBoundsAndMissingFile) {
+  EXPECT_THROW(emcl3d::Map("unknown"), std::invalid_argument);
+#ifndef EMCL3D_ENABLE_VULKAN
+  EXPECT_THROW(emcl3d::Map("vulkan"), std::runtime_error);
+#endif
   auto m = map();
   EXPECT_NEAR(m->distance({2,3,4}), 0, 1e-6);
   EXPECT_NEAR(m->distance({2,3,5}), 1, 1e-6);
+  EXPECT_NEAR(m->distance({3,4,5}), std::sqrt(3.0), 1e-6);
+  EXPECT_NEAR(m->distance({2,3,5}, std::nextafter(1.0f, 2.0f)), 1, 1e-6);
+  EXPECT_TRUE(std::isinf(m->distance({2,3,5}, 0.25f)));
   EXPECT_TRUE(m->contains({1,1,1}, 0));
   EXPECT_FALSE(m->contains({20,1,1}, 0));
   EXPECT_THROW(m->load("nonexistent-emcl3d-map.pcd", 0.1), std::runtime_error);
+}
+TEST(Map, PackedSearchMatchesBruteForce) {
+  emcl3d::test::IrregularMapFile fixture;
+  const auto &grid = fixture.points;
+  emcl3d::Map m;
+  m.load(fixture.path(), 0.01);
+  for (int i = 0; i < 256; ++i) {
+    const Eigen::Vector3f query(0.49f * (i % 19) - 1,
+        0.43f * ((i * 7) % 23) - 1, 0.37f * ((i * 11) % 29) - 1);
+    float squared = std::numeric_limits<float>::max();
+    for (const auto &point : grid) {
+      const Eigen::Vector3f d = query - point;
+      squared = std::min(squared, (d.x() * d.x() + d.y() * d.y()) + d.z() * d.z());
+    }
+    SCOPED_TRACE(i);
+    ASSERT_FLOAT_EQ(m.distance(query.cast<double>()), std::sqrt(squared));
+    EXPECT_FLOAT_EQ(m.distance(query.cast<double>(), squared + 1), std::sqrt(squared));
+    EXPECT_TRUE(std::isinf(m.distance(query.cast<double>(), squared * 0.5f)));
+  }
 }
 TEST(Filter, ExactPoseAndCovariance) {
   emcl3d::ParticleFilter f(config(), map());
@@ -39,6 +69,56 @@ TEST(Filter, ExactPoseAndCovariance) {
   EXPECT_NEAR(result.ess, 100, 1e-9);
   EXPECT_TRUE(result.covariance.isZero(1e-12));
   EXPECT_FALSE(result.reset);
+}
+TEST(Filter, BoundedLikelihoodMatchesGlobalSearch) {
+  const auto m = map();
+  auto observation = points();
+  observation.push_back({1,1,1});
+  observation.push_back({20,20,20});
+  observation.push_back({-30,-30,-30});
+  for (double sigma : {0.001, 0.3, 1.0, 1e200}) {
+    SCOPED_TRACE(sigma);
+    auto c = config();
+    c.num_particles = 8;
+    c.sigma_hit = sigma;
+    c.resample_ess_ratio = 0;
+    c.alpha_threshold = 0;
+    emcl3d::ParticleFilter filter(c, m);
+    filter.initialize(emcl3d::Pose::Identity(), emcl3d::Matrix6::Identity() * 0.015);
+    std::vector<double> logs;
+    int good = 0;
+    for (const auto &p : filter.particles()) {
+      double score = 0;
+      int inliers = 0;
+      for (const auto &point : observation) {
+        const double d = m->distance(p.pose * point);
+        score += std::log(c.z_hit * std::exp(-0.5 * d * d /
+            (c.sigma_hit * c.sigma_hit)) + c.z_random);
+        inliers += d < c.inlier_distance;
+      }
+      good += double(inliers) / observation.size() >= c.min_inlier_ratio;
+      logs.push_back(std::log(p.weight) + c.likelihood_temperature * score / observation.size());
+    }
+    const double maximum = *std::max_element(logs.begin(), logs.end());
+    double sum = 0;
+    for (auto &value : logs) { value = std::exp(value - maximum); sum += value; }
+    const auto result = filter.update(emcl3d::Pose::Identity(), observation);
+    EXPECT_DOUBLE_EQ(result.alpha, double(good) / c.num_particles);
+    for (size_t i = 0; i < logs.size(); ++i)
+      EXPECT_DOUBLE_EQ(filter.particles()[i].weight, logs[i] / sum);
+  }
+}
+TEST(Filter, FloatSqrtBoundaryRetainsInliers) {
+  auto c = config();
+  c.sigma_hit = 0.001;
+  c.inlier_distance = std::nextafter(1.0, 2.0);
+  const auto m = map();
+  const std::vector<Eigen::Vector3d> observation(4,
+      {3, 3 + std::sqrt(std::numeric_limits<float>::epsilon()), 4});
+  ASSERT_EQ(m->distance(observation.front()), 1.0);
+  emcl3d::ParticleFilter filter(c, m);
+  filter.initialize(emcl3d::Pose::Identity(), emcl3d::Matrix6::Zero());
+  EXPECT_EQ(filter.update(emcl3d::Pose::Identity(), observation).alpha, 1.0);
 }
 TEST(Filter, ThreeDimensionalMotionComposition) {
   emcl3d::ParticleFilter f(config(), map());

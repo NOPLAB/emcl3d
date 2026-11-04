@@ -1,0 +1,56 @@
+// SPDX-License-Identifier: LGPL-3.0-only
+#version 450
+layout(local_size_x = 64) in;
+struct Node { vec4 low; vec4 high; uvec4 meta; };
+layout(std430, binding = 0) readonly buffer Nodes { Node nodes[]; };
+layout(std430, binding = 1) readonly buffer Blocks { vec4 rows[]; };
+layout(std430, binding = 2) readonly buffer Queries { vec4 queries[]; };
+layout(std430, binding = 3) writeonly buffer Results { float results[]; };
+layout(push_constant) uniform Parameters { uint count; float limit; } parameters;
+
+float bound(uint id, vec3 query) {
+  precise vec3 gap = max(nodes[id].low.xyz - query, vec3(0)) +
+                    max(query - nodes[id].high.xyz, vec3(0));
+  precise vec3 square = gap * gap;
+  precise float distance = (square.x + square.y) + square.z;
+  return distance;
+}
+bool visit(float distance, float best) {
+  return isnan(distance) || isinf(distance) || distance <= best * 1.0000019073486328125;
+}
+void main() {
+  uint queryId = gl_GlobalInvocationID.x;
+  if (queryId >= parameters.count) return;
+  vec3 query = queries[queryId].xyz;
+  float best = parameters.limit;
+  uint stack[32];
+  uint size = 0;
+  uint id = 0;
+  for (;;) {
+    Node node = nodes[id];
+    if (visit(bound(id, query), best)) {
+      if (node.meta.y != 0) {
+        for (uint block = node.meta.x; block < node.meta.x + node.meta.y; ++block) {
+          precise vec4 dx = rows[3 * block] - query.x;
+          precise vec4 dy = rows[3 * block + 1] - query.y;
+          precise vec4 dz = rows[3 * block + 2] - query.z;
+          precise vec4 dx2 = dx * dx;
+          precise vec4 dy2 = dy * dy;
+          precise vec4 dz2 = dz * dz;
+          precise vec4 distance = (dx2 + dy2) + dz2;
+          best = min(best, min(min(distance.x, distance.y), min(distance.z, distance.w)));
+        }
+      } else {
+        uint nearId = node.meta.z, farId = node.meta.w;
+        float a = bound(nearId, query), b = bound(farId, query);
+        if (b < a) { uint swapId = nearId; nearId = farId; farId = swapId; }
+        stack[size++] = farId;
+        id = nearId;
+        continue;
+      }
+    }
+    if (size == 0) break;
+    id = stack[--size];
+  }
+  results[queryId] = best < parameters.limit ? best : uintBitsToFloat(0x7f800000u);
+}

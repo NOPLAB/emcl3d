@@ -60,6 +60,33 @@ void ParticleFilter::initialize(const Pose &pose, const Matrix6 &covariance) {
 }
 double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
   std::vector<double> logs(particles_.size());
+  const double variance = config_.sigma_hit * config_.sigma_hit;
+  const double radius = std::max(config_.inlier_distance, config_.sigma_hit * std::sqrt(
+      std::max(0.0, -2 * std::log(std::numeric_limits<double>::epsilon() *
+          config_.z_random / (8 * config_.z_hit)))));
+  float squared_limit = std::nextafter(float(radius * radius),
+      std::numeric_limits<float>::infinity());
+  const double omitted = std::sqrt(squared_limit);
+  // Certify the actual float boundary: omitted points must preserve both the
+  // inlier predicate and the rounded Gaussian mixture, not just its real value.
+  if (!std::isfinite(squared_limit) || !(variance > 0 && std::isfinite(variance)) ||
+      omitted < config_.inlier_distance ||
+      config_.z_hit * std::exp(-0.5 * omitted * omitted / variance) +
+          config_.z_random != config_.z_random)
+    squared_limit = std::numeric_limits<float>::max();
+  const bool gpu = map_->usesGpu();
+  if (gpu) {
+    queries_.resize(particles_.size() * points.size());
+    #pragma omp parallel for schedule(static) num_threads(config_.num_threads)
+    for (size_t i = 0; i < particles_.size(); ++i) {
+      for (size_t j = 0; j < points.size(); ++j) {
+        auto &query = queries_[i * points.size() + j];
+        query.head<3>() = (particles_[i].pose * points[j]).cast<float>();
+        query.w() = 0;
+      }
+    }
+    map_->squaredDistances(queries_, squared_limit, squared_distances_);
+  }
   int good = 0;
   // Each worker owns one score. Only the integer inlier count is reduced;
   // normalization and all random draws retain their serial order.
@@ -68,12 +95,20 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
     const auto &p = particles_[i];
     double score = 0;
     int inliers = 0;
-    for (const auto &point : points) {
-      const double d = map_->distance(p.pose * point);
+    const auto add_distance = [&](double d) {
       inliers += d < config_.inlier_distance;
       score += std::log(config_.z_hit *
           std::exp(-0.5 * d * d / (config_.sigma_hit * config_.sigma_hit)) +
           config_.z_random);
+    };
+    if (gpu) {
+      const size_t first = i * points.size();
+      for (size_t j = 0; j < points.size(); ++j)
+        // sqrt stays on CPU in float precision, as in the scalar map query.
+        add_distance(std::sqrt(squared_distances_[first + j]));
+    } else {
+      for (const auto &point : points)
+        add_distance(map_->distance(p.pose * point, squared_limit));
     }
     good += double(inliers) / points.size() >= config_.min_inlier_ratio;
     logs[i] = std::log(std::max(p.weight, std::numeric_limits<double>::min())) +
@@ -144,11 +179,16 @@ Estimate ParticleFilter::update(
   }
   double alpha = evaluate(points);
   bool supported = false;
-  for (const auto &p : particles_) {
-    size_t inside = 0;
-    for (const auto &point : points)
-      inside += map_->contains(p.pose * point, config_.inlier_distance);
-    supported |= double(inside) / points.size() >= config_.min_inlier_ratio;
+  if (alpha < config_.alpha_threshold) {
+    for (const auto &p : particles_) {
+      size_t inside = 0;
+      for (const auto &point : points)
+        inside += map_->contains(p.pose * point, config_.inlier_distance);
+      if (double(inside) / points.size() >= config_.min_inlier_ratio) {
+        supported = true;
+        break;
+      }
+    }
   }
   bad_updates_ = supported && alpha < config_.alpha_threshold ? bad_updates_ + 1 : 0;
   const bool reset = bad_updates_ >= config_.reset_confirmation_updates;
