@@ -23,6 +23,7 @@ target_include_directories(emcl3d_core PUBLIC
   ${PCL_INCLUDE_DIRS})
 target_link_libraries(emcl3d_core PUBLIC Eigen3::Eigen ${PCL_LIBRARIES} OpenMP::OpenMP_CXX)
 target_compile_options(emcl3d_core PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(emcl3d_core PRIVATE $<$<CONFIG:RelWithDebInfo>:-O3>)
 add_executable(emcl3d_node src/emcl3d_node.cpp)
 target_link_libraries(emcl3d_node emcl3d_core)
 ament_target_dependencies(emcl3d_node rclcpp geometry_msgs sensor_msgs std_msgs

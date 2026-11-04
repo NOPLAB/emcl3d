@@ -60,6 +60,20 @@ void ParticleFilter::initialize(const Pose &pose, const Matrix6 &covariance) {
 }
 double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
   std::vector<double> logs(particles_.size());
+  const double variance = config_.sigma_hit * config_.sigma_hit;
+  const double radius = std::max(config_.inlier_distance, config_.sigma_hit * std::sqrt(
+      std::max(0.0, -2 * std::log(std::numeric_limits<double>::epsilon() *
+          config_.z_random / (8 * config_.z_hit)))));
+  float squared_limit = std::nextafter(float(radius * radius),
+      std::numeric_limits<float>::infinity());
+  const double omitted = std::sqrt(squared_limit);
+  // Certify the actual float boundary: omitted points must preserve both the
+  // inlier predicate and the rounded Gaussian mixture, not just its real value.
+  if (!std::isfinite(squared_limit) || !(variance > 0 && std::isfinite(variance)) ||
+      omitted < config_.inlier_distance ||
+      config_.z_hit * std::exp(-0.5 * omitted * omitted / variance) +
+          config_.z_random != config_.z_random)
+    squared_limit = std::numeric_limits<float>::max();
   int good = 0;
   // Each worker owns one score. Only the integer inlier count is reduced;
   // normalization and all random draws retain their serial order.
@@ -69,7 +83,7 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
     double score = 0;
     int inliers = 0;
     for (const auto &point : points) {
-      const double d = map_->distance(p.pose * point);
+      const double d = map_->distance(p.pose * point, squared_limit);
       inliers += d < config_.inlier_distance;
       score += std::log(config_.z_hit *
           std::exp(-0.5 * d * d / (config_.sigma_hit * config_.sigma_hit)) +

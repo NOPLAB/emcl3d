@@ -5,6 +5,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <memory>
+#include <limits>
 #include <random>
 #include <string>
 #include <vector>
@@ -37,7 +38,9 @@ public:
   // Load before sharing; concurrent distance/contains queries are read-only.
   // Do not call load concurrently with queries.
   void load(const std::string &path, double voxel_size);
-  double distance(const Eigen::Vector3d &point) const;
+  // Search below the squared limit; omitted points return infinity.
+  double distance(const Eigen::Vector3d &point,
+      float squared_limit = std::numeric_limits<float>::max()) const;
   bool contains(const Eigen::Vector3d &point, double margin) const;
 private:
   struct Impl;

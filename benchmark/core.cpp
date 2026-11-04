@@ -77,6 +77,7 @@ int main(int argc, char **argv) {
       std::sort(times.begin(), times.end());
       std::cout << "points=" << count << " round=" << round
                 << " median_ms=" << times[15] << " p95_ms=" << times[28]
+                << " max_ms=" << times.back()
                 << " cpu_ms_per_update=" << cpu_ms / 30
                 << " checksum=" << checksum << " resets=" << resets << std::endl;
     }
