@@ -14,8 +14,12 @@ concurrency:
 
 jobs:
   humble:
-    name: ROS 2 Humble build and test
-    runs-on: ubuntu-22.04
+    name: ROS 2 Humble build and test (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     container: ros:humble-ros-base-jammy
     defaults:
@@ -50,7 +54,7 @@ jobs:
           source /opt/ros/"$ROS_DISTRO"/setup.bash
           colcon build --packages-select emcl3d --executor sequential \
             --event-handlers console_direct+ \
-            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
+            --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_BENCHMARKS=ON
 
       - name: Test
         run: |
