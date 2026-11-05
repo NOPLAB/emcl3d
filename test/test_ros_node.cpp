@@ -15,17 +15,22 @@ protected:
     rclcpp::init(0, nullptr);
   }
   static void TearDownTestSuite() { rclcpp::shutdown(); }
-  void SetUp() override {
+  rclcpp::NodeOptions node_options() {
     rclcpp::NodeOptions options;
     options.arguments({"--ros-args", "-r", "__ns:=/emcl3d_test"});
     options.parameter_overrides({
       {"map_path", std::string(TEST_MAP_PATH)}, {"num_particles", 20}, {"num_threads", 1},
       {"min_valid_points", 4}, {"scan_voxel_size", 0.01},
       {"map_voxel_size", 0.01}, {"max_cloud_age", 30.0},
+      {"tf_wait_timeout", 5.0},
       {"future_tolerance", 10.0},
       {"initial_variance", std::vector<double>(6, 0.0)},
       {"translation_noise", std::vector<double>(3, 0.0)},
       {"rotation_noise", std::vector<double>(3, 0.0)}});
+    return options;
+  }
+  void SetUp() override {
+    auto options = node_options();
     localization = std::make_shared<emcl3d::Emcl3dNode>(options);
     driver = std::make_shared<rclcpp::Node>("driver", "/emcl3d_test");
     cloud_pub = driver->create_publisher<sensor_msgs::msg::PointCloud2>(
@@ -69,9 +74,50 @@ protected:
     }
     return message;
   }
-  template<typename T> void await(std::future<T> &future) {
-    ASSERT_EQ(executor.spin_until_future_complete(future, std::chrono::seconds(10)),
-              rclcpp::FutureReturnCode::SUCCESS);
+  template<typename Future> void await(Future &future) {
+    if (executor.spin_until_future_complete(future, std::chrono::seconds(10)) !=
+        rclcpp::FutureReturnCode::SUCCESS) {
+      throw std::runtime_error("Timed out awaiting ROS event");
+    }
+  }
+  void configure_global(std::vector<rclcpp::Parameter> extra = {}) {
+    executor.remove_node(localization);
+    localization.reset();
+    auto options = node_options();
+    auto parameters = options.parameter_overrides();
+    parameters.insert(parameters.end(), {
+      {"global_localization.free_cells_only", false},
+      {"global_localization.num_candidates", 128},
+      {"global_localization.batch_size", 32},
+      {"global_localization.refinement_levels", 1},
+      {"global_localization.search_bounds", std::vector<double>{0.0, 0.02, 0.0, 0.02}},
+      {"global_localization.yaw_range", std::vector<double>{0.0, 0.01}}});
+    for (const auto & parameter : extra) {
+      parameters.erase(std::remove_if(parameters.begin(), parameters.end(), [&](const auto & existing) {
+        return existing.get_name() == parameter.get_name();
+      }), parameters.end());
+      parameters.push_back(parameter);
+    }
+    options.parameter_overrides(parameters);
+    localization = std::make_shared<emcl3d::Emcl3dNode>(options);
+    executor.add_node(localization);
+    auto graph = localization->get_graph_event();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (localization->count_publishers("points") == 0) {
+      ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+      localization->wait_for_graph_change(graph, deadline - std::chrono::steady_clock::now());
+      graph->check_and_clear();
+    }
+    discover_publisher(cloud_pub);
+  }
+  template<typename T> void discover_publisher(const std::shared_ptr<T> & publisher) {
+    auto graph = driver->get_graph_event();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (publisher->get_subscription_count() == 0) {
+      ASSERT_LT(std::chrono::steady_clock::now(), deadline);
+      driver->wait_for_graph_change(graph, deadline - std::chrono::steady_clock::now());
+      graph->check_and_clear();
+    }
   }
   template<typename T> void discover(const std::shared_ptr<T> &subscription) {
     auto graph = driver->get_graph_event();
@@ -101,6 +147,14 @@ TEST_F(RosNodeTest, ThreadCountParameterAcceptsAutomaticAndExplicitModes) {
     {"map_path", std::string(TEST_MAP_PATH)},
     {"num_threads", int64_t(std::numeric_limits<int>::max()) + 1}});
   EXPECT_THROW(std::make_shared<emcl3d::Emcl3dNode>(options), std::invalid_argument);
+}
+TEST_F(RosNodeTest, LoadsShippedConfigurationIncludingAutomaticSearchBounds) {
+  rclcpp::NodeOptions options;
+  options.arguments({"--ros-args", "--params-file", TEST_CONFIG_PATH});
+  options.parameter_overrides({{"map_path", std::string(TEST_MAP_PATH)}});
+  auto configured = std::make_shared<emcl3d::Emcl3dNode>(options);
+  EXPECT_EQ(configured->get_parameter("global_localization.search_bounds").as_double_array(),
+    (std::vector<double>{0.0, 0.0, 0.0, 0.0}));
 }
 TEST_F(RosNodeTest, ComputeBackendParameterSelectsExecutionAndRejectsUnavailableModes) {
   for (const std::string backend : {"cpu", "unknown", "vulkan"}) {
@@ -247,5 +301,366 @@ TEST_F(RosNodeTest, RejectsMalformedStorageWithoutPublishingPose) {
   await(future);
   EXPECT_TRUE(rejected);
   EXPECT_FALSE(published_pose);
+}
+TEST_F(RosNodeTest, GlobalActionAppliesMatchedPoseAndReportsObservationStamp) {
+  configure_global({{"initial_pose", std::vector<double>{10, 10, 0, 0, 0, 0}}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  std::promise<void> prior_promise;
+  auto prior = prior_promise.get_future();
+  std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> matched_promise;
+  auto matched = matched_promise.get_future();
+  bool prior_seen = false, matched_seen = false;
+  auto sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped & message) {
+      if (!prior_seen && message.pose.pose.position.x > 5) {
+        prior_seen = true;
+        prior_promise.set_value();
+      }
+      if (!matched_seen && message.pose.pose.position.x < 0.1) {
+        matched_seen = true;
+        matched_promise.set_value(message);
+      }
+    });
+  discover(sub);
+  const auto observation = cloud();
+  cloud_pub->publish(observation);
+  await(prior);
+
+  auto accepted = client->async_send_goal(Action::Goal{});
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result_future = client->async_get_result(accepted.get());
+  await(result_future);
+  const auto result = result_future.get();
+  ASSERT_EQ(result.code, rclcpp_action::ResultCode::SUCCEEDED);
+  ASSERT_TRUE(result.result->success);
+  EXPECT_TRUE(result.result->applied);
+  EXPECT_EQ(result.result->pose.header.stamp, observation.header.stamp);
+  EXPECT_NEAR(result.result->pose.pose.pose.position.x, 0, 0.03);
+  EXPECT_NEAR(result.result->pose.pose.pose.position.y, 0, 0.03);
+  await(matched);
+  EXPECT_EQ(matched.get().header.stamp, observation.header.stamp);
+}
+
+TEST_F(RosNodeTest, GlobalActionEstimateOnlyLeavesTrackingPriorUntouched) {
+  configure_global({{"initial_pose", std::vector<double>{10, 10, 0, 0, 0, 0}}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  std::promise<void> observed_promise;
+  auto observed = observed_promise.get_future();
+  bool observed_once = false;
+  auto ready_sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped &) {
+      if (!observed_once) {observed_once = true; observed_promise.set_value();}
+    });
+  discover(ready_sub);
+  cloud_pub->publish(cloud());
+  await(observed);
+  Action::Goal goal;
+  goal.estimate_only = true;
+  auto accepted = client->async_send_goal(goal);
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result_future = client->async_get_result(accepted.get());
+  await(result_future);
+  ASSERT_EQ(result_future.get().code, rclcpp_action::ResultCode::SUCCEEDED);
+  EXPECT_FALSE(result_future.get().result->applied);
+
+  std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> next_promise;
+  auto next = next_promise.get_future();
+  bool next_seen = false;
+  auto next_cloud = cloud();
+  auto next_sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped & message) {
+      if (!next_seen && message.header.stamp == next_cloud.header.stamp) {
+        next_seen = true;
+        next_promise.set_value(message);
+      }
+    });
+  discover(next_sub);
+  cloud_pub->publish(next_cloud);
+  await(next);
+  EXPECT_GT(next.get().pose.pose.position.x, 5);
+}
+
+TEST_F(RosNodeTest, GlobalHandoffAppliesOdometrySinceFrozenObservationExactlyOnce) {
+  configure_global({{"initial_pose", std::vector<double>{10, 10, 0, 0, 0, 0}},
+    {"odom_frame", "moving_odom"}, {"base_frame", "moving_base"},
+    {"global_localization.yaw_range", std::vector<double>{1.5707963267948966, 1.5807963267948966}},
+    {"global_localization.num_candidates", 1024}, {"global_localization.batch_size", 16}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  auto motion = driver->create_publisher<tf2_msgs::msg::TFMessage>("/tf", 100);
+  discover_publisher(motion);
+  const auto send_transform = [&](const geometry_msgs::msg::TransformStamped & transform) {
+    tf2_msgs::msg::TFMessage message;
+    message.transforms.push_back(transform);
+    motion->publish(message);
+  };
+  std::promise<void> prior_promise, searching_promise;
+  auto prior = prior_promise.get_future();
+  auto searching = searching_promise.get_future();
+  std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> applied_promise;
+  auto applied = applied_promise.get_future();
+  bool prior_seen = false, searching_seen = false, applied_seen = false;
+  auto sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped & message) {
+      if (!prior_seen && message.pose.pose.position.x > 5) {
+        prior_seen = true;
+        prior_promise.set_value();
+      }
+      if (!applied_seen && message.pose.pose.position.x < 1) {
+        applied_seen = true;
+        applied_promise.set_value(message);
+      }
+    });
+  discover(sub);
+  auto first = cloud();
+  first.header.frame_id = "moving_base";
+  sensor_msgs::PointCloud2Iterator<float> first_x(first, "x"), first_y(first, "y");
+  for (; first_x != first_x.end(); ++first_x, ++first_y) {
+    const float x = *first_x;
+    *first_x = *first_y;
+    *first_y = -x;
+  }
+  geometry_msgs::msg::TransformStamped transform;
+  transform.header.frame_id = "moving_odom";
+  transform.child_frame_id = "moving_base";
+  transform.header.stamp = first.header.stamp;
+  transform.transform.rotation.w = 1;
+  send_transform(transform);
+  cloud_pub->publish(first);
+  await(prior);
+  rclcpp_action::Client<Action>::SendGoalOptions options;
+  options.feedback_callback = [&](auto, auto feedback) {
+    if (!searching_seen && feedback->evaluated_candidates > 0) {
+      searching_seen = true;
+      searching_promise.set_value();
+    }
+  };
+  auto accepted = client->async_send_goal(Action::Goal{}, options);
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result = client->async_get_result(accepted.get());
+  await(searching);
+
+  auto second = first;
+  second.header.stamp = driver->now();
+  for (sensor_msgs::PointCloud2Iterator<float> x(second, "x"); x != x.end(); ++x) {
+    *x -= 0.5f;
+  }
+  transform.header.stamp = second.header.stamp;
+  transform.transform.translation.x = 0.5;
+  send_transform(transform);
+  cloud_pub->publish(second);
+  await(result);
+  ASSERT_EQ(result.get().code, rclcpp_action::ResultCode::SUCCEEDED);
+  await(applied);
+  const auto applied_pose = applied.get();
+  EXPECT_EQ(result.get().result->pose.header.stamp, first.header.stamp);
+  EXPECT_EQ(applied_pose.header.stamp, second.header.stamp);
+  EXPECT_NEAR(applied_pose.pose.pose.position.x, 0, 0.03);
+  EXPECT_NEAR(applied_pose.pose.pose.position.y, 0.5, 0.03);
+
+  std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> next_promise;
+  auto next = next_promise.get_future();
+  auto third = second;
+  third.header.stamp = driver->now();
+  bool next_seen = false;
+  auto next_sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped & message) {
+      if (!next_seen && message.header.stamp == third.header.stamp) {
+        next_seen = true;
+        next_promise.set_value(message);
+      }
+    });
+  discover(next_sub);
+  transform.header.stamp = third.header.stamp;
+  send_transform(transform);
+  cloud_pub->publish(third);
+  await(next);
+  const auto next_pose = next.get();
+  EXPECT_NEAR(next_pose.pose.pose.position.x, 0, 0.03);
+  EXPECT_NEAR(next_pose.pose.pose.position.y, 0.5, 0.03);
+}
+
+TEST_F(RosNodeTest, GlobalActionCanBeCanceledWhileSearchingAndRejectsConcurrentGoals) {
+  configure_global({{"global_localization.num_candidates", 100000},
+    {"global_localization.batch_size", 1}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  std::promise<void> waiting_promise;
+  auto waiting = waiting_promise.get_future();
+  bool waiting_seen = false;
+  rclcpp_action::Client<Action>::SendGoalOptions options;
+  options.feedback_callback = [&](auto, auto feedback) {
+    if (!waiting_seen && feedback->evaluated_candidates > 0) {
+      waiting_seen = true;
+      waiting_promise.set_value();
+    }
+  };
+  auto accepted = client->async_send_goal(Action::Goal{}, options);
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result_future = client->async_get_result(accepted.get());
+  cloud_pub->publish(cloud());
+  await(waiting);
+  auto second = client->async_send_goal(Action::Goal{});
+  await(second);
+  EXPECT_EQ(second.get(), nullptr);
+  auto cancellation = client->async_cancel_goal(accepted.get());
+  await(cancellation);
+  await(result_future);
+  EXPECT_EQ(result_future.get().code, rclcpp_action::ResultCode::CANCELED);
+  EXPECT_EQ(result_future.get().result->code, "CANCELED");
+}
+
+TEST_F(RosNodeTest, GlobalActionUsesPublishedFreeSpaceInsteadOfInferringItFromPcd) {
+  configure_global({{"global_localization.free_cells_only", true}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  auto grid_pub = driver->create_publisher<nav_msgs::msg::OccupancyGrid>(
+    "map", rclcpp::QoS(1).reliable().transient_local());
+  auto accepted = client->async_send_goal(Action::Goal{});
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result_future = client->async_get_result(accepted.get());
+  nav_msgs::msg::OccupancyGrid grid;
+  grid.header.frame_id = "map";
+  grid.info.resolution = 1;
+  grid.info.width = grid.info.height = 4;
+  grid.info.origin.position.x = grid.info.origin.position.y = -1;
+  grid.info.origin.orientation.w = 1;
+  grid.data.assign(16, -1);
+  grid_pub->publish(grid);
+  cloud_pub->publish(cloud());
+  await(result_future);
+  EXPECT_EQ(result_future.get().code, rclcpp_action::ResultCode::ABORTED);
+  EXPECT_EQ(result_future.get().result->code, "no_valid_candidates");
+  std::promise<void> grid_updated_promise;
+  auto grid_updated = grid_updated_promise.get_future();
+  bool grid_updated_seen = false;
+  auto diagnostics = driver->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+    "diagnostics", 10, [&](const diagnostic_msgs::msg::DiagnosticArray & message) {
+      for (const auto & entry : message.status) {
+        for (const auto & value : entry.values) {
+          if (!grid_updated_seen && value.key == "global_localization_grid_updates" && value.value == "2") {
+            grid_updated_seen = true;
+            grid_updated_promise.set_value();
+          }
+        }
+      }
+    });
+  discover(diagnostics);
+  grid.data.assign(16, 0);
+  grid_pub->publish(grid);
+  await(grid_updated);
+  auto retry = client->async_send_goal(Action::Goal{});
+  await(retry);
+  ASSERT_NE(retry.get(), nullptr);
+  auto retry_result = client->async_get_result(retry.get());
+  await(retry_result);
+  EXPECT_EQ(retry_result.get().code, rclcpp_action::ResultCode::SUCCEEDED);
+  EXPECT_TRUE(retry_result.get().result->applied);
+}
+
+TEST_F(RosNodeTest, ValidManualInitialPoseAbortsGlobalSearch) {
+  configure_global({{"global_localization.num_candidates", 100000},
+    {"global_localization.batch_size", 1}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  auto initial_pub = driver->create_publisher<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "initialpose", 1);
+  discover_publisher(initial_pub);
+  std::promise<void> ready_promise;
+  auto ready = ready_promise.get_future();
+  bool ready_seen = false;
+  auto ready_sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 1, [&](const geometry_msgs::msg::PoseWithCovarianceStamped &) {
+      if (!ready_seen) {ready_seen = true; ready_promise.set_value();}
+    });
+  discover(ready_sub);
+  cloud_pub->publish(cloud());
+  await(ready);
+  auto accepted = client->async_send_goal(Action::Goal{});
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result_future = client->async_get_result(accepted.get());
+  geometry_msgs::msg::PoseWithCovarianceStamped initial;
+  initial.header.frame_id = "map";
+  initial.header.stamp = driver->now();
+  initial.pose.pose.orientation.w = 1;
+  initial.pose.pose.position.x = 100;
+  initial_pub->publish(initial);
+  await(result_future);
+  EXPECT_EQ(result_future.get().code, rclcpp_action::ResultCode::ABORTED);
+  EXPECT_EQ(result_future.get().result->code, "MANUAL_INITIALPOSE");
+}
+
+TEST_F(RosNodeTest, GlobalSearchTimeoutAbortsWithoutApplyingPartialResult) {
+  configure_global({{"global_localization.num_candidates", 100000},
+    {"global_localization.batch_size", 1}, {"global_localization.timeout", 0.001}});
+  using Action = emcl3d::Emcl3dNode::GlobalAction;
+  auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
+  ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
+  auto accepted = client->async_send_goal(Action::Goal{});
+  await(accepted);
+  ASSERT_NE(accepted.get(), nullptr);
+  auto result = client->async_get_result(accepted.get());
+  cloud_pub->publish(cloud());
+  await(result);
+  EXPECT_EQ(result.get().code, rclcpp_action::ResultCode::ABORTED);
+  EXPECT_EQ(result.get().result->code, "TIMEOUT");
+  EXPECT_FALSE(result.get().result->applied);
+}
+
+TEST_F(RosNodeTest, StartupLocalizationWaitsForCloudThenAppliesOnce) {
+  configure_global({{"global_localization.run_on_startup", true},
+    {"initial_pose", std::vector<double>{10, 10, 0, 0, 0, 0}}});
+  std::promise<geometry_msgs::msg::PoseWithCovarianceStamped> pose_promise;
+  auto pose = pose_promise.get_future();
+  bool pose_seen = false;
+  auto sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped & message) {
+      if (!pose_seen) {pose_seen = true; pose_promise.set_value(message);}
+    });
+  discover(sub);
+  cloud_pub->publish(cloud());
+  await(pose);
+  const auto result = pose.get();
+  EXPECT_NEAR(result.pose.pose.position.x, 0, 0.03);
+  EXPECT_NEAR(result.pose.pose.position.y, 0, 0.03);
+}
+
+TEST_F(RosNodeTest, StartupInputTimeoutDoesNotPublishConfiguredPrior) {
+  configure_global({{"global_localization.run_on_startup", true},
+    {"global_localization.startup_wait_timeout", 0.03}});
+  std::promise<void> timeout_promise;
+  auto timed_out = timeout_promise.get_future();
+  bool reported = false, published = false;
+  auto pose_sub = driver->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
+    "mcl_pose", 10, [&](const geometry_msgs::msg::PoseWithCovarianceStamped &) {published = true;});
+  auto diagnostic_sub = driver->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+    "diagnostics", 10, [&](const diagnostic_msgs::msg::DiagnosticArray & message) {
+      for (const auto & entry : message.status) {
+        for (const auto & value : entry.values) {
+          if (!reported && value.key == "global_localization_code" && value.value == "NO_CLOUD") {
+            reported = true;
+            timeout_promise.set_value();
+          }
+        }
+      }
+    });
+  discover(pose_sub);
+  discover(diagnostic_sub);
+  await(timed_out);
+  EXPECT_FALSE(published);
 }
 }  // namespace

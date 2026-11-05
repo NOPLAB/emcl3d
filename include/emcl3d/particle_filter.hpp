@@ -9,6 +9,7 @@
 #include <random>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace emcl3d {
 using Pose = Eigen::Isometry3d;
@@ -44,10 +45,11 @@ public:
   // Batched XYZ queries use the selected backend; their fourth lane is ignored.
   // Scalar diagnostics stay on CPU.
   void squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
-      std::vector<float> &output) const;
+      std::vector<float> &output, int num_threads = 1) const;
   bool usesGpu() const;
   std::string deviceName() const;
   bool contains(const Eigen::Vector3d &point, double margin) const;
+  std::pair<Eigen::Vector3d, Eigen::Vector3d> bounds() const;
 private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

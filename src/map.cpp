@@ -11,6 +11,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <omp.h>
 
 namespace emcl3d {
 struct Map::Impl {
@@ -68,7 +69,7 @@ double Map::distance(const Eigen::Vector3d &p, float squared_limit) const {
   return std::sqrt(impl_->index.squaredDistance(query, squared_limit));
 }
 void Map::squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
-    std::vector<float> &output) const {
+    std::vector<float> &output, int num_threads) const {
   if (!impl_->loaded) throw std::logic_error("Map is not loaded");
 #ifdef EMCL3D_ENABLE_VULKAN
   if (impl_->use_gpu) {
@@ -77,12 +78,17 @@ void Map::squaredDistances(const std::vector<Eigen::Vector4f> &queries, float sq
   }
 #endif
   output.resize(queries.size());
+#pragma omp parallel for num_threads(num_threads > 0 ? num_threads : omp_get_max_threads())
   for (size_t i = 0; i < queries.size(); ++i) {
     const Eigen::Array4f query(queries[i].x(), queries[i].y(), queries[i].z(), 0);
     output[i] = impl_->index.squaredDistance(query, squared_limit);
   }
 }
 bool Map::usesGpu() const { return impl_->use_gpu; }
+std::pair<Eigen::Vector3d, Eigen::Vector3d> Map::bounds() const {
+  if (!impl_->loaded) throw std::logic_error("Map is not loaded");
+  return {impl_->minimum, impl_->maximum};
+}
 std::string Map::deviceName() const {
   if (!impl_->loaded) throw std::logic_error("Map is not loaded");
 #ifdef EMCL3D_ENABLE_VULKAN

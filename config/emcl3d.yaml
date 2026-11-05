@@ -49,3 +49,29 @@ emcl3d:
     rotation_noise: [0.1, 0.1, 0.1]
     expansion_translation: [0.2, 0.2, 0.2]
     expansion_rotation: [0.1, 0.1, 0.1]
+
+    global_localization:
+      run_on_startup: false # Request one startup search; requires apply_result true.
+      apply_result: true # Apply successful searches unless the goal is estimate-only.
+      search_mode: xy_yaw # Only XY translation and yaw are searched.
+      fixed_z_roll_pitch: [0.0, 0.0, 0.0] # Fixed z in metres, roll and pitch in radians.
+      search_bounds: [0.0, 0.0, 0.0, 0.0] # All zeros uses PCD XY bounds; otherwise [xmin, xmax, ymin, ymax].
+      yaw_range: [-3.141592653589793, 3.141592653589793] # Increasing radians, spanning at most 2*pi.
+      num_candidates: 100000 # Coarse search budget, from 2 to 10000000 poses.
+      max_eval_points: 2000 # Observation point cap per pose, at least min_valid_points.
+      batch_size: 256 # Poses per step; batch_size * max_eval_points must be <= 16000000.
+      num_hypotheses: 10 # Retained competing hypotheses, from 2 to 1000.
+      refinement_levels: 3 # Local refinement rounds after coarse search, from 0 to 10.
+      free_cells_only: true # Require a separately published occupancy grid for candidate placement.
+      free_space_topic: map # Relative nav_msgs/OccupancyGrid topic, reliable and transient_local.
+      occupancy_threshold: 50 # Values below this are free; unknown cells are excluded.
+      footprint_radius: 0.3 # Metre radius that must fit entirely in known free cells.
+      min_inlier_ratio: 0.6 # Required fraction of observation points within inlier_distance.
+      max_mean_squared_error: 0.15 # Maximum truncated mean squared distance in square metres.
+      ambiguity_score_margin: 0.02 # Required score gap between distinct competing modes.
+      mode_separation_xy: 1.0 # Metre XY distance used to separate competing modes.
+      mode_separation_yaw: 0.5 # Radian yaw distance used to separate competing modes.
+      max_position_stddev: 0.5 # Maximum accepted position uncertainty in metres.
+      max_yaw_stddev: 0.2 # Maximum accepted yaw uncertainty in radians.
+      startup_wait_timeout: 30.0 # Input wait limit in steady-clock seconds for startup and action goals.
+      timeout: 30.0 # Search-only steady-clock seconds, checked at batch boundaries.

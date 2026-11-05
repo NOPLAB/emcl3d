@@ -152,7 +152,8 @@ cloud is rejected without changing the motion baseline.
 
 `initial_pose` is `[x, y, z, roll, pitch, yaw]`, with rotation `Rz(yaw) Ry(pitch)
 Rx(roll)`. `initial_variance` specifies the corresponding diagonal variances in
-fixed map axes. This prior is used until an `initialpose` message is accepted.
+fixed map axes. This prior is used until an `initialpose` message is accepted,
+unless `global_localization.run_on_startup` suppresses it.
 
 For `initialpose`, nonzero stamps refer to the pose's exact instant; stamp zero
 means current ROS time, not latest TF. The message frame is transformed to
@@ -193,6 +194,97 @@ reinitializes it, preventing a partially applied motion from being retried.
 accepted observation (TF lookup, preprocessing, filter update, and support checks,
 excluding publishing and time awaiting TF). `expansion_reset_count` counts all
 expansion resets since node startup.
+
+## Global localization
+
+Global localization searches XY and yaw against the PCD map, then hands a
+successful estimate to the normal 6DoF tracker. It isn't a 6D global search.
+`global_localization.search_mode` accepts only `xy_yaw`; set
+`fixed_z_roll_pitch: [z, roll, pitch]` to the known height and attitude.
+All-zero `search_bounds: [0.0, 0.0, 0.0, 0.0]` uses the PCD XY bounds; otherwise supply
+`[min_x, max_x, min_y, max_y]` with finite increasing intervals.
+`yaw_range` is an increasing `[min, max]` interval in radians spanning at most
+`2*pi`, defaulting to `[-pi, pi]`.
+
+The private action `~/global_localization` resolves to
+`/emcl3d/global_localization` with the default node name:
+
+```bash
+ros2 action send_goal /emcl3d/global_localization emcl3d/action/GlobalLocalization \
+  '{estimate_only: false}' --feedback
+ros2 action send_goal /emcl3d/global_localization emcl3d/action/GlobalLocalization \
+  '{estimate_only: true}' --feedback
+```
+
+A goal may override XY bounds with `use_search_bounds: true` and
+`search_bounds: [min_x, max_x, min_y, max_y]`. Invalid bounds and concurrent
+goals are rejected, including goals sent while startup localization is waiting.
+Cancellation stops the active request without applying its result. An accepted
+manual `initialpose` cancels global localization and takes precedence.
+Feedback reports the stage, evaluated and total candidates, best inlier ratio,
+and elapsed seconds. Results include `success`, `applied`, a status `code` and
+`message`, a pose with covariance, and competing hypotheses with scores and
+inlier ratios.
+
+`apply_result: true` allows a successful search to initialize tracking.
+An estimate-only goal never applies its result; `apply_result: false` also
+prevents application, even for a goal with `estimate_only: false`.
+The result pose refers to the original search observation's stamp in `map_frame`.
+Application carries that estimate forward using the newest valid observation's
+odometry snapshot and initializes tracking at that newer stamp. A stale handoff
+fails rather than applying an old pose.
+
+`run_on_startup` defaults to `false`. When enabled, the configured startup prior
+is suppressed until a global result is successfully applied or a manual
+`initialpose` is accepted. Enabling startup localization requires
+`apply_result: true`; otherwise startup fails explicitly.
+Startup makes one attempt, without automatic retries; failure leaves it unlocalized.
+Send another action goal or a manual pose to recover.
+`startup_wait_timeout` limits waiting for a recent valid cloud, its stamped TF,
+and any required free-space grid, for both startup and action requests.
+The separate `timeout` starts when search begins and is checked at batch
+boundaries, so an in-flight batch can exceed the limit. Both use steady-clock seconds.
+Failed or ambiguous searches preserve an existing tracking belief.
+
+Node failure and interruption codes include `NO_CLOUD`, `NO_FREE_SPACE`,
+`TIMEOUT`, `INVALID_INPUT`, `SEARCH_ERROR`, `STALE_OBSERVATION`, `CLOCK_RESET`,
+`MANUAL_INITIALPOSE`, and `CANCELED`. Core search reasons use lowercase values
+such as `success`, `ambiguous_match`, and `insufficient_match`; preserve case
+when interpreting `code`.
+
+With the default `free_cells_only: true`, publish a separate
+`nav_msgs/OccupancyGrid` on the relative topic `map`, configurable through
+`free_space_topic`. The subscription uses reliable, transient-local QoS and
+requires the grid's frame to equal `map_frame`; no grid-frame TF is applied.
+Free space isn't inferred from PCD points. Cells must be known and below
+`occupancy_threshold`; unknown, occupied, and out-of-grid cells are excluded
+throughout the `footprint_radius`. Setting `free_cells_only: false` removes this
+placement constraint, not the PCD scoring requirement.
+
+`num_candidates` controls the coarse pose-search budget, `max_eval_points` caps
+the observation points scored per pose, and `batch_size` limits poses scored in
+one step. `refinement_levels` adds local refinement, while `num_hypotheses`
+retains competing solutions. Larger budgets don't guarantee global uniqueness.
+Coarse candidates form a reproducible uniform XY/yaw lattice. The budget and
+progress count attempted poses, including poses rejected by the free-space mask;
+refinement adds to the reported total. Refinement rotates around the scan centroid
+to avoid coupling a yaw correction to an unreachable base translation.
+Both CPU and Vulkan require `batch_size * max_eval_points <= 16000000`;
+there's no automatic downsizing. Vulkan device limits may impose further
+restrictions. No measured performance claim is implied by these defaults.
+
+Global scoring reuses top-level `sigma_hit`, `z_hit`, `z_random`,
+`inlier_distance`, `num_threads`, `min_valid_points`, `random_seed`, and the
+selected `compute_backend`. The global point cap is separate from the tracking
+cap. Acceptance uses the nested `min_inlier_ratio`, `max_mean_squared_error`,
+`ambiguity_score_margin`, `mode_separation_xy`, `mode_separation_yaw`,
+`max_position_stddev`, and `max_yaw_stddev` settings. The global position limit
+defaults to 0.5 metres and the yaw limit to 0.2 radians; these aren't the
+top-level diagnostic limits. Scores are normalized Gaussian-mixture match
+values, not probabilities or a guarantee of a unique global pose.
+The global position limit bounds the square root of the XY covariance trace.
+Covariance describes the winning local mode and includes a search-resolution
+floor; it does not describe uncertainty across rejected competing locations.
 
 ## Parameters
 

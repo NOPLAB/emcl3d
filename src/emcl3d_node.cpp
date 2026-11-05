@@ -1,12 +1,16 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
 #include <emcl3d/particle_filter.hpp>
+#include <emcl3d/global_localizer.hpp>
+#include <emcl3d/action/global_localization.hpp>
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/float64.hpp>
@@ -24,6 +28,7 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -98,6 +103,8 @@ Matrix6 checked_covariance(Matrix6 covariance)
 class Emcl3dNode : public rclcpp::Node
 {
 public:
+  using GlobalAction = emcl3d::action::GlobalLocalization;
+  using GlobalGoal = rclcpp_action::ServerGoalHandle<GlobalAction>;
   explicit Emcl3dNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions())
   : Node("emcl3d", options), last_clock_(0, 0, get_clock()->get_clock_type()),
     last_stamp_(0, 0, get_clock()->get_clock_type()),
@@ -189,7 +196,11 @@ public:
       [this](geometry_msgs::msg::PoseWithCovarianceStamped::ConstSharedPtr pose) {
         receive_initial_pose(*pose);
       });
-    timer_ = create_wall_timer(std::chrono::milliseconds(20), [this]() { process_cloud(); });
+    setup_global_localization();
+    timer_ = create_wall_timer(std::chrono::milliseconds(20), [this]() {
+      process_cloud();
+      process_global_localization();
+    });
     diagnostic_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
       observe_clock();
       if (last_stamp_.nanoseconds() > 0 && (now() - last_stamp_).seconds() > max_age_) {
@@ -202,6 +213,346 @@ public:
   }
 
 private:
+  struct Observation {
+    std::vector<Eigen::Vector3d> points;
+    Pose odom;
+    rclcpp::Time stamp;
+  };
+
+  static std::vector<Eigen::Vector3d> sampled_points(
+    const std::vector<Eigen::Vector3d> & input, size_t limit)
+  {
+    if (input.size() <= limit) {
+      return input;
+    }
+    std::vector<Eigen::Vector3d> output;
+    output.reserve(limit);
+    for (size_t i = 0; i < limit; ++i) {
+      output.push_back(input[i * input.size() / limit]);
+    }
+    return output;
+  }
+
+  bool global_busy() const
+  {
+    return global_goal_ || global_search_ || global_waiting_;
+  }
+
+  void setup_global_localization()
+  {
+    const std::string prefix = "global_localization.";
+    global_config_.candidates = integer(prefix + "num_candidates", 100000, 2, 10000000);
+    global_config_.batch_size = integer(prefix + "batch_size", 256, 1, 1000000);
+    global_eval_points_ = integer(prefix + "max_eval_points", 2000, config_.min_valid_points, 1000000);
+    require(global_config_.batch_size * static_cast<size_t>(global_eval_points_) <= 16000000,
+      "global localization batch_size * max_eval_points must not exceed 16000000");
+    global_config_.max_eval_points = global_eval_points_;
+    global_config_.min_valid_points = config_.min_valid_points;
+    global_config_.num_hypotheses = integer(prefix + "num_hypotheses", 10, 2, 1000);
+    global_config_.refinement_levels = integer(prefix + "refinement_levels", 3, 0, 10);
+    global_config_.free_cells_only = declare_parameter<bool>(prefix + "free_cells_only", true);
+    global_config_.footprint_radius = number(prefix + "footprint_radius", 0.3, 0.0,
+      std::numeric_limits<double>::max(), true);
+    global_config_.inlier_distance = config_.inlier_distance;
+    global_config_.sigma_hit = config_.sigma_hit;
+    global_config_.z_hit = config_.z_hit;
+    global_config_.z_random = config_.z_random;
+    global_config_.num_threads = config_.num_threads;
+    global_config_.min_inlier_ratio = number(prefix + "min_inlier_ratio", 0.6, 0.0, 1.0);
+    global_config_.max_mean_squared_error = number(prefix + "max_mean_squared_error", 0.15, 0.0);
+    global_config_.ambiguity_score_margin = number(prefix + "ambiguity_score_margin", 0.02, 0.0);
+    global_config_.mode_separation_xy = number(prefix + "mode_separation_xy", 1.0, 0.0);
+    global_config_.mode_separation_yaw = number(prefix + "mode_separation_yaw", 0.5, 0.0);
+    global_config_.max_position_stddev = number(prefix + "max_position_stddev", 0.5, 0.0);
+    global_config_.max_yaw_stddev = number(prefix + "max_yaw_stddev", 0.2, 0.0);
+    global_config_.seed = config_.random_seed;
+    require(declare_parameter<std::string>(prefix + "search_mode", "xy_yaw") == "xy_yaw",
+      "global localization currently supports only xy_yaw search");
+    const auto fixed = declare_parameter<std::vector<double>>(prefix + "fixed_z_roll_pitch",
+      {0.0, 0.0, 0.0});
+    require(fixed.size() == 3 && std::all_of(fixed.begin(), fixed.end(),
+      [](double value) {return std::isfinite(value);}),
+      "fixed_z_roll_pitch must contain three finite values");
+    global_config_.z = fixed[0];
+    global_config_.roll = fixed[1];
+    global_config_.pitch = fixed[2];
+    const auto yaw = declare_parameter<std::vector<double>>(prefix + "yaw_range",
+      {-3.141592653589793, 3.141592653589793});
+    require(yaw.size() == 2 && std::isfinite(yaw[0]) && std::isfinite(yaw[1]) &&
+      yaw[1] > yaw[0] && yaw[1] - yaw[0] <= 2 * 3.141592653589793 + 1e-12,
+      "yaw_range must be [min, max] spanning at most 2*pi");
+    global_config_.yaw_min = yaw[0];
+    global_config_.yaw_max = yaw[1];
+    const auto bounds = declare_parameter<std::vector<double>>(
+      prefix + "search_bounds", {0.0, 0.0, 0.0, 0.0});
+    require(bounds.size() == 4, "search_bounds must contain [xmin,xmax,ymin,ymax]; all zeros uses map bounds");
+    if (!std::all_of(bounds.begin(), bounds.end(), [](double value) {return value == 0.0;})) {
+      set_search_bounds(global_config_, {bounds[0], bounds[1], bounds[2], bounds[3]});
+    }
+    global_timeout_ = number(prefix + "timeout", 30.0, 0.0);
+    global_wait_timeout_ = number(prefix + "startup_wait_timeout", 30.0, 0.0);
+    global_apply_ = declare_parameter<bool>(prefix + "apply_result", true);
+    startup_waiting_ = declare_parameter<bool>(prefix + "run_on_startup", false);
+    require(!startup_waiting_ || global_apply_,
+      "run_on_startup requires global_localization.apply_result=true");
+    startup_unlocalized_ = startup_waiting_;
+    global_wait_started_ = std::chrono::steady_clock::now();
+    occupancy_threshold_ = integer(prefix + "occupancy_threshold", 50, 1, 100);
+    free_grid_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+      declare_parameter<std::string>(prefix + "free_space_topic", "map"),
+      rclcpp::QoS(1).reliable().transient_local(),
+      [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr message) {
+        try {
+          require(message->header.frame_id == map_frame_, "free-space grid must use map_frame");
+          FreeSpaceGrid grid;
+          grid.width = message->info.width;
+          grid.height = message->info.height;
+          grid.resolution = message->info.resolution;
+          grid.origin = pose_from_message(message->info.origin);
+          grid.data = message->data;
+          grid.occupancy_threshold = occupancy_threshold_;
+          grid.validate();
+          free_grid_ = std::move(grid);
+          ++free_grid_updates_;
+          publish_diagnostics();
+        } catch (const std::exception & error) {
+          free_grid_.reset();
+          status(diagnostic_msgs::msg::DiagnosticStatus::WARN,
+            std::string("Rejected free-space grid: ") + error.what());
+        }
+      });
+    global_server_ = rclcpp_action::create_server<GlobalAction>(
+      this, "~/global_localization",
+      [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const GlobalAction::Goal> goal) {
+        if (global_busy() || startup_waiting_) {
+          return rclcpp_action::GoalResponse::REJECT;
+        }
+        try {
+          auto config = global_config_;
+          if (goal->use_search_bounds) {
+            set_search_bounds(config, goal->search_bounds);
+          }
+        } catch (const std::invalid_argument &) {
+          return rclcpp_action::GoalResponse::REJECT;
+        }
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      },
+      [](const std::shared_ptr<GlobalGoal>) {return rclcpp_action::CancelResponse::ACCEPT;},
+      [this](const std::shared_ptr<GlobalGoal> goal) {
+        global_goal_ = goal;
+        global_waiting_ = true;
+        global_wait_started_ = std::chrono::steady_clock::now();
+        global_state_ = "waiting_for_input";
+        global_code_.clear();
+        global_evaluated_ = 0;
+      });
+    if (startup_waiting_) {
+      global_state_ = "waiting_for_input";
+      status(diagnostic_msgs::msg::DiagnosticStatus::WARN, "Waiting for startup global localization");
+    }
+  }
+
+  static void set_search_bounds(GlobalLocalizationConfig & config, const std::array<double, 4> & bounds)
+  {
+    require(std::all_of(bounds.begin(), bounds.end(), [](double value) {return std::isfinite(value);}) &&
+      bounds[0] < bounds[1] && bounds[2] < bounds[3],
+      "search_bounds requires finite increasing XY intervals");
+    config.min_xy = Eigen::Vector2d(bounds[0], bounds[2]);
+    config.max_xy = Eigen::Vector2d(bounds[1], bounds[3]);
+  }
+
+  void stop_global_localization(const std::string & code, const std::string & message,
+    bool canceled = false)
+  {
+    if (!global_busy() && !startup_waiting_) {
+      return;
+    }
+    global_code_ = code;
+    global_state_ = canceled ? "canceled" : "failed";
+    if (global_goal_) {
+      auto result = std::make_shared<GlobalAction::Result>();
+      result->code = code;
+      result->message = message;
+      if (canceled || global_goal_->is_canceling()) {
+        global_goal_->canceled(result);
+      } else {
+        global_goal_->abort(result);
+      }
+    }
+    global_goal_.reset();
+    global_search_.reset();
+    search_observation_.reset();
+    global_waiting_ = false;
+    startup_waiting_ = false;
+    status(diagnostic_msgs::msg::DiagnosticStatus::WARN, message);
+    publish_diagnostics();
+  }
+
+  void process_global_localization()
+  {
+    if (global_goal_ && global_goal_->is_canceling()) {
+      stop_global_localization("CANCELED", "Global localization canceled", true);
+      return;
+    }
+    if (!global_busy() && !startup_waiting_) {
+      return;
+    }
+    const auto current = std::chrono::steady_clock::now();
+    if (!global_search_) {
+      const bool recent = latest_observation_ &&
+        (now() - latest_observation_->stamp).seconds() <= max_age_ &&
+        (now() - latest_observation_->stamp).seconds() >= -future_tolerance_;
+      if (!recent || (global_config_.free_cells_only && !free_grid_)) {
+        if (std::chrono::duration<double>(current - global_wait_started_).count() >= global_wait_timeout_) {
+          stop_global_localization(!recent ? "NO_CLOUD" : "NO_FREE_SPACE",
+            !recent ? "No valid cloud and observation-stamped TF before input timeout" :
+            "No valid free-space grid before input timeout");
+        } else {
+          publish_global_feedback("waiting_for_input", 0, 0, 0);
+        }
+        return;
+      }
+      try {
+        auto config = global_config_;
+        if (global_goal_ && global_goal_->get_goal()->use_search_bounds) {
+          set_search_bounds(config, global_goal_->get_goal()->search_bounds);
+        }
+        search_observation_ = latest_observation_;
+        global_search_ = std::make_unique<GlobalLocalizer>(map_, config,
+          sampled_points(search_observation_->points, global_eval_points_), free_grid_);
+        global_search_started_ = current;
+        global_waiting_ = false;
+        startup_waiting_ = false;
+        global_state_ = "searching";
+        global_evaluated_ = 0;
+      } catch (const std::exception & error) {
+        stop_global_localization("INVALID_INPUT", error.what());
+        return;
+      }
+    }
+    if (std::chrono::duration<double>(current - global_search_started_).count() >= global_timeout_) {
+      stop_global_localization("TIMEOUT", "Global localization search timed out");
+      return;
+    }
+    try {
+      global_search_->step();
+      if (std::chrono::duration<double>(
+          std::chrono::steady_clock::now() - global_search_started_).count() >= global_timeout_)
+      {
+        stop_global_localization("TIMEOUT", "Global localization search timed out");
+        return;
+      }
+      const auto & progress = global_search_->progress();
+      global_evaluated_ = progress.evaluated;
+      publish_global_feedback(progress.refinement_level == 0 ? "searching" : "refining",
+        progress.evaluated, progress.total, progress.best_inlier_ratio);
+      if (progress.complete) {
+        finish_global_localization();
+      }
+    } catch (const std::exception & error) {
+      stop_global_localization("SEARCH_ERROR", error.what());
+    }
+  }
+
+  void publish_global_feedback(const std::string & stage, size_t evaluated, size_t total, double best)
+  {
+    if (!global_goal_) {
+      return;
+    }
+    auto feedback = std::make_shared<GlobalAction::Feedback>();
+    feedback->stage = stage;
+    feedback->evaluated_candidates = evaluated;
+    feedback->total_candidates = total;
+    feedback->best_inlier_ratio = best;
+    feedback->elapsed_seconds = std::chrono::duration<double>(
+      std::chrono::steady_clock::now() - global_wait_started_).count();
+    global_goal_->publish_feedback(feedback);
+  }
+
+  void finish_global_localization()
+  {
+    const auto & found = global_search_->result();
+    auto result = std::make_shared<GlobalAction::Result>();
+    result->success = found.success;
+    result->code = found.reason;
+    result->message = found.reason;
+    result->pose.header.frame_id = map_frame_;
+    result->pose.header.stamp = search_observation_->stamp;
+    result->pose.pose.pose = pose_message(found.pose);
+    for (int row = 0; row < 6; ++row) {
+      for (int col = 0; col < 6; ++col) {
+        result->pose.pose.covariance[6 * row + col] = found.covariance(row, col);
+      }
+    }
+    for (const auto & hypothesis : found.hypotheses) {
+      result->hypotheses.push_back(pose_message(hypothesis.pose));
+      result->scores.push_back(hypothesis.score);
+      result->inlier_ratios.push_back(hypothesis.inlier_ratio);
+    }
+    const bool apply = global_apply_ && (!global_goal_ || !global_goal_->get_goal()->estimate_only);
+    if (found.success && apply) {
+      if (!latest_observation_ || (now() - latest_observation_->stamp).seconds() > max_age_) {
+        result->success = false;
+        result->code = "STALE_OBSERVATION";
+        result->message = "Search succeeded but no recent observation is available for handoff";
+      } else {
+        const auto & latest = *latest_observation_;
+        const Pose delta = search_observation_->odom.inverse() * latest.odom;
+        const Pose pose = found.pose * delta;
+        // Fixed-map-axis orientation uncertainty moves the translated base origin.
+        const Eigen::Vector3d arm = found.pose.rotation() * delta.translation();
+        Eigen::Matrix3d skew;
+        skew << 0, -arm.z(), arm.y(), arm.z(), 0, -arm.x(), -arm.y(), arm.x(), 0;
+        Matrix6 jacobian = Matrix6::Identity();
+        jacobian.topRightCorner<3, 3>() = -skew;
+        Matrix6 covariance = jacobian * found.covariance * jacobian.transpose();
+        const double motion = delta.translation().norm() +
+          std::abs(Eigen::AngleAxisd(delta.rotation()).angle());
+        covariance.topLeftCorner<3, 3>() += pose.rotation() *
+          (config_.translation_noise.array().square() * motion).matrix().asDiagonal() *
+          pose.rotation().transpose();
+        covariance.bottomRightCorner<3, 3>() += pose.rotation() *
+          (config_.rotation_noise.array().square() * motion).matrix().asDiagonal() *
+          pose.rotation().transpose();
+        filter_->initialize(pose, covariance);
+        estimate_pose_ = pose;
+        estimate_covariance_ = covariance;
+        last_odom_ = latest.odom;
+        last_stamp_ = latest.stamp;
+        initial_stamp_ = latest.stamp;
+        have_odom_ = true;
+        filter_usable_ = true;
+        startup_unlocalized_ = false;
+        alpha_ = 0;
+        support_ratio_ = found.hypotheses.empty() ? 0 : found.hypotheses.front().inlier_ratio;
+        last_reset_ = false;
+        if (pending_ && rclcpp::Time(pending_->header.stamp, get_clock()->get_clock_type()) <= latest.stamp) {
+          pending_.reset();
+        }
+        publish_estimate(latest.stamp, latest.odom);
+        result->applied = true;
+      }
+    }
+    global_code_ = result->code;
+    global_state_ = result->success ? "succeeded" : "failed";
+    if (global_goal_) {
+      if (result->success) {
+        global_goal_->succeed(result);
+      } else {
+        global_goal_->abort(result);
+      }
+    }
+    global_goal_.reset();
+    global_search_.reset();
+    search_observation_.reset();
+    global_waiting_ = false;
+    status(result->success ? diagnostic_msgs::msg::DiagnosticStatus::OK :
+      diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      std::string("Global localization: ") + result->code +
+      (result->applied ? " (applied)" : " (not applied)"));
+    publish_diagnostics();
+  }
+
   int integer(const std::string & name, int value, int minimum, int maximum)
   {
     const auto result = declare_parameter<int64_t>(name, value);
@@ -242,6 +593,8 @@ private:
   {
     const auto current = now();
     if (current < last_clock_) {
+      stop_global_localization("CLOCK_RESET", "ROS time moved backwards");
+      latest_observation_.reset();
       pending_.reset();
       last_stamp_ = rclcpp::Time(0, 0, get_clock()->get_clock_type());
       initial_stamp_ = last_stamp_;
@@ -310,6 +663,10 @@ private:
       }
       const auto odom = pose_from_transform(tf_buffer_->lookupTransform(
         odom_frame_, base_frame_, stamp, rclcpp::Duration::from_seconds(0.0)));
+      stop_global_localization("MANUAL_INITIALPOSE", "Manual initial pose takes priority");
+      startup_waiting_ = false;
+      startup_unlocalized_ = false;
+      latest_observation_.reset();
       filter_->initialize(pose, covariance);
       estimate_pose_ = pose;
       estimate_covariance_ = covariance;
@@ -352,8 +709,12 @@ private:
   }
 
   std::vector<Eigen::Vector3d> points(
-    const sensor_msgs::msg::PointCloud2 & cloud, const Pose & base_from_sensor)
+    const sensor_msgs::msg::PointCloud2 & cloud, const Pose & base_from_sensor,
+    int limit = 0)
   {
+    if (limit == 0) {
+      limit = max_eval_points_;
+    }
     const uint64_t count = static_cast<uint64_t>(cloud.width) * cloud.height;
     require(count > 0 && count <= static_cast<uint64_t>(max_input_points_),
       "cloud point count is empty or exceeds max_input_points");
@@ -381,10 +742,10 @@ private:
     const bool swap = cloud.is_bigendian == little_endian;
     std::set<std::array<int64_t, 3>> voxels;
     std::vector<Eigen::Vector3d> result;
-    result.reserve(static_cast<size_t>(max_eval_points_));
+    result.reserve(static_cast<size_t>(limit));
     // Uniform index sampling bounds work and avoids taking only the scan's first sector.
     const uint64_t stride = std::max<uint64_t>(
-      1, (count + static_cast<uint64_t>(max_eval_points_) - 1) / max_eval_points_);
+      1, (count + static_cast<uint64_t>(limit) - 1) / limit);
     for (uint64_t index = 0; index < count; index += stride) {
       const auto * data = cloud.data.data() + (index / cloud.width) * cloud.row_step +
         (index % cloud.width) * cloud.point_step;
@@ -425,7 +786,7 @@ private:
   void process_cloud()
   {
     observe_clock();
-    if (!pending_ || !filter_usable_) {
+    if (!pending_ || (!filter_usable_ && !startup_unlocalized_ && !global_busy())) {
       return;
     }
     const auto processing_started = std::chrono::steady_clock::now();
@@ -464,8 +825,10 @@ private:
       return;
     }
     std::vector<Eigen::Vector3d> observation;
+    std::vector<Eigen::Vector3d> global_points;
     try {
-      observation = points(*pending_, base_from_sensor);
+      observation = points(*pending_, base_from_sensor,
+        startup_unlocalized_ ? global_eval_points_ : max_eval_points_);
     } catch (const std::exception & error) {
       pending_.reset();
       ++dropped_;
@@ -473,7 +836,25 @@ private:
         std::string("Rejected cloud: ") + error.what());
       return;
     }
+    if (startup_unlocalized_ || global_eval_points_ == max_eval_points_) {
+      global_points = observation;
+    } else {
+      try {
+        global_points = points(*pending_, base_from_sensor, global_eval_points_);
+      } catch (const std::invalid_argument &) {
+        // A sparse global sample must not reject a valid tracking observation.
+        global_points.clear();
+      }
+    }
     pending_.reset();
+    if (global_points.empty()) {
+      latest_observation_.reset();
+    } else {
+      latest_observation_ = Observation{std::move(global_points), odom, stamp};
+    }
+    if (startup_unlocalized_ || !filter_usable_) {
+      return;
+    }
     const Pose delta = have_odom_ ? Pose(last_odom_.inverse() * odom) : Pose::Identity();
     try {
       const auto estimate = filter_->update(delta, observation);
@@ -596,11 +977,30 @@ private:
     value("expansion_reset", last_reset_ ? "true" : "false");
     value("expansion_reset_count", std::to_string(expansion_reset_count_));
     value("processing_duration_ms", std::to_string(processing_duration_ms_));
+    value("global_localization_state", global_state_);
+    value("global_localization_code", global_code_);
+    value("global_localization_evaluated", std::to_string(global_evaluated_));
+    value("startup_localization_pending", startup_unlocalized_ ? "true" : "false");
+    value("global_localization_grid_updates", std::to_string(free_grid_updates_));
     message.status.push_back(std::move(entry));
     diagnostic_pub_->publish(message);
   }
 
   Config config_;
+  GlobalLocalizationConfig global_config_;
+  std::optional<FreeSpaceGrid> free_grid_;
+  std::optional<Observation> latest_observation_, search_observation_;
+  std::unique_ptr<GlobalLocalizer> global_search_;
+  rclcpp_action::Server<GlobalAction>::SharedPtr global_server_;
+  std::shared_ptr<GlobalGoal> global_goal_;
+  rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr free_grid_sub_;
+  bool startup_waiting_ = false, startup_unlocalized_ = false, global_waiting_ = false;
+  bool global_apply_ = true;
+  int global_eval_points_ = 2000, occupancy_threshold_ = 50;
+  double global_timeout_ = 30, global_wait_timeout_ = 30;
+  size_t global_evaluated_ = 0, free_grid_updates_ = 0;
+  std::string global_state_ = "idle", global_code_;
+  std::chrono::steady_clock::time_point global_wait_started_, global_search_started_;
   std::shared_ptr<const Map> map_;
   std::unique_ptr<ParticleFilter> filter_;
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
 #include "emcl3d/particle_filter.hpp"
+#include "emcl3d/global_localizer.hpp"
 #include "map_fixture.hpp"
 #include <gtest/gtest.h>
 #include <cmath>
@@ -87,5 +88,42 @@ TEST(Vulkan, CpuFloatSqrtBoundaryRetainsInliers) {
   emcl3d::ParticleFilter filter(config, map);
   filter.initialize(emcl3d::Pose::Identity(), emcl3d::Matrix6::Zero());
   EXPECT_EQ(filter.update(emcl3d::Pose::Identity(), observation).alpha, 1.0);
+}
+TEST(Vulkan, GlobalSearchPreservesCpuHypothesesAcrossBatchedDispatches) {
+  emcl3d::test::IrregularMapFile fixture;
+  auto cpu_map = std::make_shared<emcl3d::Map>("cpu");
+  auto gpu_map = std::make_shared<emcl3d::Map>("vulkan");
+  cpu_map->load(fixture.path(), 0.01);
+  gpu_map->load(fixture.path(), 0.01);
+  auto pose = emcl3d::Pose::Identity();
+  pose.translation() = Eigen::Vector3d(0.3, -0.3, 0);
+  pose.linear() = Eigen::AngleAxisd(3.141592653589793 / 10,
+    Eigen::Vector3d::UnitZ()).toRotationMatrix();
+  std::vector<Eigen::Vector3d> scan;
+  for (const auto & point : fixture.points) {
+    scan.push_back(pose.inverse() * point.cast<double>());
+  }
+  emcl3d::GlobalLocalizationConfig config;
+  config.candidates = 1000;
+  config.batch_size = 37;
+  config.num_threads = 2;
+  config.free_cells_only = false;
+  config.min_xy = Eigen::Vector2d(-1, -1);
+  config.max_xy = Eigen::Vector2d(1, 1);
+  config.inlier_distance = 0.3;
+  emcl3d::GlobalLocalizer cpu(cpu_map, config, scan);
+  config.batch_size = 135;
+  emcl3d::GlobalLocalizer gpu(gpu_map, config, scan);
+  while (!cpu.step()) {}
+  while (!gpu.step()) {}
+  ASSERT_TRUE(cpu.result().success) << cpu.result().reason;
+  ASSERT_TRUE(gpu.result().success) << gpu.result().reason;
+  EXPECT_TRUE(cpu.result().pose.matrix().isApprox(gpu.result().pose.matrix(), 1e-6));
+  EXPECT_TRUE(cpu.result().covariance.isApprox(gpu.result().covariance, 1e-6));
+  ASSERT_EQ(cpu.result().hypotheses.size(), gpu.result().hypotheses.size());
+  for (size_t i = 0; i < cpu.result().hypotheses.size(); ++i) {
+    EXPECT_NEAR(cpu.result().hypotheses[i].score, gpu.result().hypotheses[i].score, 1e-6);
+    EXPECT_DOUBLE_EQ(cpu.result().hypotheses[i].inlier_ratio, gpu.result().hypotheses[i].inlier_ratio);
+  }
 }
 }  // namespace

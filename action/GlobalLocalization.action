@@ -1,0 +1,20 @@
+# Use the configured search bounds unless explicitly overridden.
+bool estimate_only false
+bool use_search_bounds false
+# [min_x, max_x, min_y, max_y], metres in map_frame.
+float64[4] search_bounds
+---
+bool success
+bool applied
+string code
+string message
+geometry_msgs/PoseWithCovarianceStamped pose
+geometry_msgs/Pose[] hypotheses
+float64[] scores
+float64[] inlier_ratios
+---
+string stage
+uint64 evaluated_candidates
+uint64 total_candidates
+float64 best_inlier_ratio
+float64 elapsed_seconds
