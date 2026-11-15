@@ -57,9 +57,10 @@ if(EMCL3D_ENABLE_VULKAN)
   ament_export_dependencies(Vulkan)
 endif()
 add_executable(emcl3d_node src/emcl3d_node.cpp)
-target_link_libraries(emcl3d_node emcl3d_core "${emcl3d_typesupport}")
-ament_target_dependencies(emcl3d_node rclcpp rclcpp_action nav_msgs geometry_msgs sensor_msgs std_msgs
-  diagnostic_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions)
+target_link_libraries(emcl3d_node emcl3d_core "${emcl3d_typesupport}"
+  rclcpp::rclcpp rclcpp_action::rclcpp_action
+  ${nav_msgs_TARGETS} ${geometry_msgs_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS}
+  ${diagnostic_msgs_TARGETS} tf2::tf2 tf2_ros::tf2_ros tf2_geometry_msgs::tf2_geometry_msgs)
 target_compile_options(emcl3d_node PRIVATE -Wall -Wextra -Wpedantic)
 option(BUILD_BENCHMARKS "Build the deterministic two-thread core benchmark" OFF)
 if(BUILD_BENCHMARKS)
@@ -85,9 +86,11 @@ if(BUILD_TESTING)
   endif()
   ament_add_gtest(test_ros_node test/test_ros_node.cpp TIMEOUT 90
     APPEND_LIBRARY_DIRS "${CMAKE_CURRENT_BINARY_DIR}")
-  target_link_libraries(test_ros_node emcl3d_core "${emcl3d_typesupport}")
-  ament_target_dependencies(test_ros_node rclcpp rclcpp_action nav_msgs geometry_msgs sensor_msgs std_msgs
-    diagnostic_msgs tf2 tf2_ros tf2_msgs tf2_geometry_msgs pcl_conversions)
+  target_link_libraries(test_ros_node emcl3d_core "${emcl3d_typesupport}"
+    rclcpp::rclcpp rclcpp_action::rclcpp_action
+    ${nav_msgs_TARGETS} ${geometry_msgs_TARGETS} ${sensor_msgs_TARGETS} ${std_msgs_TARGETS}
+    ${diagnostic_msgs_TARGETS} ${tf2_msgs_TARGETS}
+    tf2::tf2 tf2_ros::tf2_ros tf2_geometry_msgs::tf2_geometry_msgs)
   target_compile_definitions(test_ros_node PRIVATE
     TEST_MAP_PATH="${CMAKE_CURRENT_SOURCE_DIR}/test/map.pcd"
     TEST_CONFIG_PATH="${CMAKE_CURRENT_SOURCE_DIR}/config/emcl3d.yaml")

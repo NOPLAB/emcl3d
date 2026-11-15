@@ -14,7 +14,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/msg/point_field.hpp>
 #include <std_msgs/msg/float64.hpp>
-#include <tf2/exceptions.h>
+#include <tf2/exceptions.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
