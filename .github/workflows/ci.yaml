@@ -13,21 +13,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  humble:
-    name: ${{ matrix.vulkan == 'OFF' && 'ROS 2 Humble build and test' || 'Vulkan compile' }} (${{ matrix.runner }})
+  build-and-test:
+    name: ROS 2 ${{ matrix.ros_distro }} ${{ matrix.vulkan == 'OFF' && 'build and test' || 'Vulkan compile' }} (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-22.04-arm]
+        ros_distro: [humble, jazzy, lyrical]
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
         vulkan: ["OFF", "ON"]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
-    container: ros:humble-ros-base-jammy
+    container: ros:${{ matrix.ros_distro }}-ros-base
     defaults:
       run:
         shell: bash
     env:
-      ROS_DISTRO: humble
+      ROS_DISTRO: ${{ matrix.ros_distro }}
       ROS_LOCALHOST_ONLY: "1"
       MAKEFLAGS: -j2
       CMAKE_BUILD_PARALLEL_LEVEL: "2"
@@ -35,7 +36,7 @@ jobs:
       EMCL3D_DISABLE_VULKAN_DISCOVERY: ${{ matrix.vulkan == 'OFF' && 'ON' || 'OFF' }}
     steps:
       - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: src/emcl3d
           persist-credentials: false
@@ -79,6 +80,13 @@ jobs:
       - name: Report test results
         if: ${{ always() && matrix.vulkan == 'OFF' }}
         run: colcon test-result --verbose
+
+      - name: Upload test results
+        if: ${{ always() && matrix.vulkan == 'OFF' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ matrix.ros_distro }}-${{ matrix.runner }}-test-results
+          path: build/emcl3d/test_results
 
       - name: Check installed launch file
         run: |
