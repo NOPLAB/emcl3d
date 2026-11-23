@@ -4,7 +4,7 @@
 
 namespace emcl3d::detail {
 inline float MapIndex::lowerBound(const Node &node, const Eigen::Array4f &query) {
-  const Eigen::Array4f gap = (node.low - query).max(0) + (query - node.high).max(0);
+  const Eigen::Array4f gap = (node.low - query).max(0.0f) + (query - node.high).max(0.0f);
   return gap.square().sum();
 }
 inline void MapIndex::nearest(size_t id, const Eigen::Array4f &query, float &best) const {
