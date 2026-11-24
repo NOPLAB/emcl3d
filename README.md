@@ -128,6 +128,7 @@ squared units.
 | `compute_backend` | `cpu` | `cpu` or the optional `vulkan` backend |
 | `max_eval_points` | `2000` | Tracking point budget |
 | `min_valid_points` | `20` | Minimum usable points per observation |
+| `min_noise_scale` | `0.0` | Lower bound of the motion-noise scale; positive keeps particles diffusing while stationary |
 | `global_localization.run_on_startup` | `false` | Run one global search before tracking |
 
 A positive `num_threads` requests that many OpenMP workers; `1` runs serially.
@@ -136,6 +137,13 @@ run in parallel; random sampling, normalization, estimation, and resampling keep
 their serial order. Identical inputs and seeds therefore give identical CPU
 results across thread counts. Library callers must not reload the map during
 queries.
+
+Each update perturbs particles by `translation_noise` and `rotation_noise`
+multiplied by `max(min_noise_scale, sqrt(|translation| + |rotation angle|))` of
+the odometry step. With the default zero, a stationary robot adds no noise, so
+resampling narrows the particle set and the estimate stops following the
+observation. A small positive value such as `0.05` keeps correcting it while
+stationary.
 
 Parameter validation enforces:
 
@@ -148,6 +156,7 @@ Parameter validation enforces:
   `future_tolerance` may be zero.
 - `min_range` is finite and nonnegative; `max_range` is finite and greater.
 - Noise and expansion vectors have three finite nonnegative values.
+  `min_noise_scale` is finite and nonnegative.
   Initialization arrays have six finite values; variances are nonnegative.
 - `min_valid_points` and `reset_confirmation_updates` are positive, and
   `min_valid_points <= max_eval_points <= max_input_points`. Evaluation is capped

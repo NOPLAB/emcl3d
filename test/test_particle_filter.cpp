@@ -143,6 +143,29 @@ TEST(Filter, DeterministicInitializationAndInvalidCovariance) {
   EXPECT_THROW(a.initialize(emcl3d::Pose::Identity(), covariance), std::invalid_argument);
   EXPECT_THROW(a.update(emcl3d::Pose::Identity(), {}), std::invalid_argument);
 }
+TEST(Filter, MinNoiseScaleDiffusesStationaryParticles) {
+  auto c = config();
+  c.translation_noise.setConstant(0.1);
+  c.rotation_noise.setConstant(0.1);
+  emcl3d::ParticleFilter still(c, map());
+  still.initialize(emcl3d::Pose::Identity(), emcl3d::Matrix6::Zero());
+  still.update(emcl3d::Pose::Identity(), points());
+  for (const auto &p : still.particles())
+    EXPECT_TRUE(p.pose.matrix().isApprox(emcl3d::Pose::Identity().matrix(), 1e-12));
+
+  c.min_noise_scale = 0.1;
+  emcl3d::ParticleFilter diffusing(c, map());
+  diffusing.initialize(emcl3d::Pose::Identity(), emcl3d::Matrix6::Zero());
+  diffusing.update(emcl3d::Pose::Identity(), points());
+  double largest = 0;
+  for (const auto &p : diffusing.particles())
+    largest = std::max(largest, p.pose.translation().norm());
+  EXPECT_GT(largest, 1e-4);
+  EXPECT_LT(largest, 0.2);
+
+  c.min_noise_scale = -0.1;
+  EXPECT_THROW(emcl3d::ParticleFilter(c, map()), std::invalid_argument);
+}
 TEST(Filter, ResetRequiresConsecutiveSupportedFailures) {
   auto c = config();
   c.inlier_distance = 0.01;

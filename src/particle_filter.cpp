@@ -34,6 +34,8 @@ ParticleFilter::ParticleFilter(Config config, std::shared_ptr<const Map> map)
                         config_.expansion_translation, config_.expansion_rotation})
     if (!v.allFinite() || (v.array() < 0).any())
       throw std::invalid_argument("Noise and expansion limits must be nonnegative");
+  if (!std::isfinite(config_.min_noise_scale) || config_.min_noise_scale < 0)
+    throw std::invalid_argument("Noise and expansion limits must be nonnegative");
 }
 void ParticleFilter::initialize(const Pose &pose, const Matrix6 &covariance) {
   if (!pose.matrix().allFinite() || !covariance.allFinite() ||
@@ -165,8 +167,9 @@ Estimate ParticleFilter::update(
       std::any_of(points.begin(), points.end(), [](const auto &p) { return !p.allFinite(); }))
     throw std::invalid_argument("Invalid observation or odometry");
   std::normal_distribution<double> normal;
-  const double scale = std::sqrt(delta.translation().norm() +
-                                 std::abs(Eigen::AngleAxisd(delta.rotation()).angle()));
+  const double scale = std::max(config_.min_noise_scale,
+      std::sqrt(delta.translation().norm() +
+                std::abs(Eigen::AngleAxisd(delta.rotation()).angle())));
   for (auto &p : particles_) {
     Pose noise = Pose::Identity();
     Eigen::Vector3d angle;

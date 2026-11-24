@@ -128,6 +128,7 @@ public:
     config_.min_valid_points = integer("min_valid_points", 20, 1, 1000000);
     config_.translation_noise = vector_parameter("translation_noise", {0.1, 0.1, 0.1});
     config_.rotation_noise = vector_parameter("rotation_noise", {0.1, 0.1, 0.1});
+    config_.min_noise_scale = number("min_noise_scale", 0.0, 0.0, std::numeric_limits<double>::max(), true);
     config_.expansion_translation = vector_parameter("expansion_translation", {0.2, 0.2, 0.2});
     config_.expansion_rotation = vector_parameter("expansion_rotation", {0.1, 0.1, 0.1});
 

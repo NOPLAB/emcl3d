@@ -47,6 +47,9 @@ emcl3d:
     # Axis-wise standard deviations, not variances.
     translation_noise: [0.1, 0.1, 0.1]
     rotation_noise: [0.1, 0.1, 0.1]
+    # Noise is scaled by max(min_noise_scale, sqrt(|translation| + |rotation|)) of
+    # the odometry step. Zero adds no noise while stationary.
+    min_noise_scale: 0.0
     expansion_translation: [0.2, 0.2, 0.2]
     expansion_rotation: [0.1, 0.1, 0.1]
 
