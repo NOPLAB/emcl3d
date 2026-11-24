@@ -29,6 +29,8 @@ struct Config {
   int reset_confirmation_updates = 3, min_valid_points = 20;
   Eigen::Vector3d translation_noise = Eigen::Vector3d::Constant(0.1);
   Eigen::Vector3d rotation_noise = Eigen::Vector3d::Constant(0.1);
+  // Lower bound of the motion-noise scale, so a stationary robot keeps diffusing.
+  double min_noise_scale = 0;
   Eigen::Vector3d expansion_translation = Eigen::Vector3d::Constant(0.2);
   Eigen::Vector3d expansion_rotation = Eigen::Vector3d::Constant(0.1);
 };
