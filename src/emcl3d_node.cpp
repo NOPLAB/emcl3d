@@ -3,6 +3,7 @@
 #include <emcl3d/particle_filter.hpp>
 #include <emcl3d/global_localizer.hpp>
 #include <emcl3d/action/global_localization.hpp>
+#include "timing.hpp"
 
 #include <diagnostic_msgs/msg/diagnostic_array.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -214,25 +215,24 @@ public:
   }
 
 private:
-  struct Observation {
-    std::vector<Eigen::Vector3d> points;
+  struct ObservationPose {
     Pose odom;
     rclcpp::Time stamp;
   };
 
-  static std::vector<Eigen::Vector3d> sampled_points(
-    const std::vector<Eigen::Vector3d> & input, size_t limit)
-  {
-    if (input.size() <= limit) {
-      return input;
-    }
-    std::vector<Eigen::Vector3d> output;
-    output.reserve(limit);
-    for (size_t i = 0; i < limit; ++i) {
-      output.push_back(input[i * input.size() / limit]);
-    }
-    return output;
-  }
+  struct Observation : ObservationPose {
+    sensor_msgs::msg::PointCloud2::ConstSharedPtr cloud;
+    Pose base_from_sensor;
+    std::vector<Eigen::Vector3d> global_points;
+  };
+
+  struct TrackingTimings {
+    int64_t stamp_ns = 0;
+    double receive_age_ms = 0, queue_ms = 0, tf_lookup_ms = 0, preprocess_ms = 0;
+    double global_preprocess_ms = 0, update_ms = 0, support_ms = 0;
+    double publish_ms = 0, correction_age_ms = 0;
+    FilterTimings filter;
+  };
 
   bool global_busy() const
   {
@@ -414,13 +414,24 @@ private:
         return;
       }
       try {
+        auto & observation = *latest_observation_;
+        if (observation.global_points.empty()) {
+          try {
+            observation.global_points = points(
+              *observation.cloud, observation.base_from_sensor, global_eval_points_);
+          } catch (const std::invalid_argument &) {
+            // Tracking and global sampling use different strides. Wait for a usable cloud.
+            latest_observation_.reset();
+            return;
+          }
+        }
         auto config = global_config_;
         if (global_goal_ && global_goal_->get_goal()->use_search_bounds) {
           set_search_bounds(config, global_goal_->get_goal()->search_bounds);
         }
-        search_observation_ = latest_observation_;
+        search_observation_ = ObservationPose{observation.odom, observation.stamp};
         global_search_ = std::make_unique<GlobalLocalizer>(map_, config,
-          sampled_points(search_observation_->points, global_eval_points_), free_grid_);
+          observation.global_points, free_grid_);
         global_search_started_ = current;
         global_waiting_ = false;
         startup_waiting_ = false;
@@ -632,6 +643,7 @@ private:
     }
     pending_ = std::move(cloud);
     pending_since_ = std::chrono::steady_clock::now();
+    pending_receive_age_ms_ = age * 1000.0;
   }
 
   void receive_initial_pose(const geometry_msgs::msg::PoseWithCovarianceStamped & message)
@@ -790,7 +802,7 @@ private:
     if (!pending_ || (!filter_usable_ && !startup_unlocalized_ && !global_busy())) {
       return;
     }
-    const auto processing_started = std::chrono::steady_clock::now();
+    const auto processing_started = detail::SteadyClock::now();
     const rclcpp::Time stamp(pending_->header.stamp, get_clock()->get_clock_type());
     const double age = (now() - stamp).seconds();
     if (age > max_age_ || age < -future_tolerance_) {
@@ -825,6 +837,13 @@ private:
         std::string("Invalid observation transform: ") + error.what());
       return;
     }
+    TrackingTimings timings;
+    timings.stamp_ns = stamp.nanoseconds();
+    timings.receive_age_ms = pending_receive_age_ms_;
+    timings.queue_ms = std::chrono::duration<double, std::milli>(
+      processing_started - pending_since_).count();
+    timings.tf_lookup_ms = detail::elapsed_ms(processing_started);
+    const auto preprocess_started = detail::SteadyClock::now();
     std::vector<Eigen::Vector3d> observation;
     std::vector<Eigen::Vector3d> global_points;
     try {
@@ -837,28 +856,36 @@ private:
         std::string("Rejected cloud: ") + error.what());
       return;
     }
-    if (startup_unlocalized_ || global_eval_points_ == max_eval_points_) {
-      global_points = observation;
-    } else {
-      try {
-        global_points = points(*pending_, base_from_sensor, global_eval_points_);
-      } catch (const std::invalid_argument &) {
-        // A sparse global sample must not reject a valid tracking observation.
-        global_points.clear();
+    timings.preprocess_ms = detail::elapsed_ms(preprocess_started);
+    const bool prepare_global = startup_unlocalized_ || global_busy();
+    if (prepare_global) {
+      if (startup_unlocalized_ || global_eval_points_ == max_eval_points_) {
+        global_points = observation;
+      } else {
+        const auto global_started = detail::SteadyClock::now();
+        try {
+          global_points = points(*pending_, base_from_sensor, global_eval_points_);
+        } catch (const std::invalid_argument &) {
+          // A sparse global sample must not reject a valid tracking observation.
+        }
+        timings.global_preprocess_ms = detail::elapsed_ms(global_started);
       }
     }
-    pending_.reset();
-    if (global_points.empty()) {
+    if (prepare_global && global_points.empty()) {
       latest_observation_.reset();
     } else {
-      latest_observation_ = Observation{std::move(global_points), odom, stamp};
+      // Keep the raw observation for a request that arrives before the next cloud.
+      latest_observation_ = Observation{
+        {odom, stamp}, pending_, base_from_sensor, std::move(global_points)};
     }
+    pending_.reset();
     if (startup_unlocalized_ || !filter_usable_) {
       return;
     }
     const Pose delta = have_odom_ ? Pose(last_odom_.inverse() * odom) : Pose::Identity();
+    const auto update_started = detail::SteadyClock::now();
     try {
-      const auto estimate = filter_->update(delta, observation);
+      const auto estimate = filter_->update(delta, observation, &timings.filter);
       require(estimate.pose.matrix().allFinite() && estimate.covariance.allFinite() &&
         std::isfinite(estimate.alpha) && std::isfinite(estimate.ess),
         "filter returned a nonfinite estimate");
@@ -877,6 +904,8 @@ private:
         std::string("Filter update failed; send initialpose: ") + error.what());
       return;
     }
+    timings.update_ms = detail::elapsed_ms(update_started);
+    const auto support_started = detail::SteadyClock::now();
     last_odom_ = odom;
     have_odom_ = true;
     last_stamp_ = stamp;
@@ -911,9 +940,13 @@ private:
       (!supported ? "Insufficient map support; localization is not confirmed" :
       (last_reset_ ? "Expansion reset applied; localization is not confirmed" :
       (healthy ? "Observation supported (not a convergence guarantee)" : "Low localization alpha")))));
-    processing_duration_ms_ = std::chrono::duration<double, std::milli>(
-      std::chrono::steady_clock::now() - processing_started).count();
+    timings.support_ms = detail::elapsed_ms(support_started);
+    processing_duration_ms_ = detail::elapsed_ms(processing_started);
+    const auto publish_started = detail::SteadyClock::now();
     publish_estimate(stamp, odom);
+    timings.publish_ms = detail::elapsed_ms(publish_started);
+    timings.correction_age_ms = (now() - stamp).seconds() * 1000.0;
+    tracking_timings_ = timings;
     publish_diagnostics();
   }
 
@@ -978,6 +1011,21 @@ private:
     value("expansion_reset", last_reset_ ? "true" : "false");
     value("expansion_reset_count", std::to_string(expansion_reset_count_));
     value("processing_duration_ms", std::to_string(processing_duration_ms_));
+    value("tracking_timing_stamp_ns", std::to_string(tracking_timings_.stamp_ns));
+    value("cloud_receive_age_ms", std::to_string(tracking_timings_.receive_age_ms));
+    value("cloud_queue_ms", std::to_string(tracking_timings_.queue_ms));
+    value("tf_lookup_ms", std::to_string(tracking_timings_.tf_lookup_ms));
+    value("tracking_preprocess_ms", std::to_string(tracking_timings_.preprocess_ms));
+    value("global_preprocess_ms", std::to_string(tracking_timings_.global_preprocess_ms));
+    value("filter_update_ms", std::to_string(tracking_timings_.update_ms));
+    value("query_preparation_ms", std::to_string(tracking_timings_.filter.query_preparation_ms));
+    value("vulkan_upload_ms", std::to_string(tracking_timings_.filter.vulkan.upload_ms));
+    value("vulkan_submit_wait_ms", std::to_string(tracking_timings_.filter.vulkan.submit_wait_ms));
+    value("vulkan_readback_ms", std::to_string(tracking_timings_.filter.vulkan.readback_ms));
+    value("likelihood_ms", std::to_string(tracking_timings_.filter.likelihood_ms));
+    value("support_check_ms", std::to_string(tracking_timings_.support_ms));
+    value("publish_estimate_ms", std::to_string(tracking_timings_.publish_ms));
+    value("correction_age_ms", std::to_string(tracking_timings_.correction_age_ms));
     value("global_localization_state", global_state_);
     value("global_localization_code", global_code_);
     value("global_localization_evaluated", std::to_string(global_evaluated_));
@@ -990,7 +1038,8 @@ private:
   Config config_;
   GlobalLocalizationConfig global_config_;
   std::optional<FreeSpaceGrid> free_grid_;
-  std::optional<Observation> latest_observation_, search_observation_;
+  std::optional<Observation> latest_observation_;
+  std::optional<ObservationPose> search_observation_;
   std::unique_ptr<GlobalLocalizer> global_search_;
   rclcpp_action::Server<GlobalAction>::SharedPtr global_server_;
   std::shared_ptr<GlobalGoal> global_goal_;
@@ -1016,6 +1065,8 @@ private:
   rclcpp::TimerBase::SharedPtr timer_, diagnostic_timer_;
   sensor_msgs::msg::PointCloud2::ConstSharedPtr pending_;
   std::chrono::steady_clock::time_point pending_since_;
+  double pending_receive_age_ms_ = 0;
+  TrackingTimings tracking_timings_;
   std::string map_frame_, odom_frame_, base_frame_;
   Pose estimate_pose_ = Pose::Identity(), last_odom_ = Pose::Identity();
   Matrix6 estimate_covariance_ = Matrix6::Identity();

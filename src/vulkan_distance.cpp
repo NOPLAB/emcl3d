@@ -3,6 +3,8 @@
 #include "vulkan_context.hpp"
 #include "map_index.hpp"
 #include "map_distance_spirv.hpp"
+#include "emcl3d/particle_filter.hpp"
+#include "timing.hpp"
 #include <array>
 #include <cstring>
 #include <limits>
@@ -93,7 +95,8 @@ struct VulkanDistance::Impl {
         *context.command_pool, vk::CommandBufferLevel::ePrimary, 1));
   }
 
-  void run(const std::vector<Eigen::Vector4f> &input, float limit, std::vector<float> &output) {
+  void run(const std::vector<Eigen::Vector4f> &input, float limit, std::vector<float> &output,
+      VulkanTimings *timings) {
     std::lock_guard<std::mutex> lock(mutex);
     if (input.empty()) { output.clear(); return; }
     const uint64_t groups = (uint64_t(input.size()) + 63) / 64;
@@ -110,7 +113,9 @@ struct VulkanDistance::Impl {
       queries = std::move(next_queries);
       results = std::move(next_results);
     }
+    const auto upload_started = timings ? SteadyClock::now() : SteadyClock::time_point{};
     context.write(*queries, input.data(), query_bytes);
+    if (timings) timings->upload_ms += elapsed_ms(upload_started);
     output.resize(input.size());
     const std::array<const VulkanBuffer *, 4> buffers{
         nodes.get(), blocks.get(), queries.get(), results.get()};
@@ -144,16 +149,20 @@ struct VulkanDistance::Impl {
     command.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
                             vk::PipelineStageFlagBits::eHost, {}, {}, readback, {});
     command.end();
+    const auto submit_started = timings ? SteadyClock::now() : SteadyClock::time_point{};
     context.submit(command);
+    if (timings) timings->submit_wait_ms += elapsed_ms(submit_started);
+    const auto readback_started = timings ? SteadyClock::now() : SteadyClock::time_point{};
     context.read(*results, output.data(), result_bytes);
+    if (timings) timings->readback_ms += elapsed_ms(readback_started);
   }
 };
 
 VulkanDistance::VulkanDistance(const MapIndex &index) : impl_(std::make_unique<Impl>(index)) {}
 VulkanDistance::~VulkanDistance() = default;
 void VulkanDistance::squaredDistances(const std::vector<Eigen::Vector4f> &queries, float limit,
-                                     std::vector<float> &output) {
-  impl_->run(queries, limit, output);
+                                     std::vector<float> &output, VulkanTimings *timings) {
+  impl_->run(queries, limit, output, timings);
 }
 std::string VulkanDistance::deviceName() const { return impl_->context.properties.deviceName.data(); }
 }  // namespace emcl3d::detail

@@ -70,13 +70,18 @@ double Map::distance(const Eigen::Vector3d &p, float squared_limit) const {
 }
 void Map::squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
     std::vector<float> &output, int num_threads) const {
+  squaredDistances(queries, squared_limit, output, num_threads, nullptr);
+}
+void Map::squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
+    std::vector<float> &output, int num_threads, VulkanTimings *timings) const {
   if (!impl_->loaded) throw std::logic_error("Map is not loaded");
 #ifdef EMCL3D_ENABLE_VULKAN
   if (impl_->use_gpu) {
-    impl_->gpu->squaredDistances(queries, squared_limit, output);
+    impl_->gpu->squaredDistances(queries, squared_limit, output, timings);
     return;
   }
 #endif
+  (void)timings;
   output.resize(queries.size());
 #pragma omp parallel for num_threads(num_threads > 0 ? num_threads : omp_get_max_threads())
   for (size_t i = 0; i < queries.size(); ++i) {

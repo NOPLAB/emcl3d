@@ -274,13 +274,29 @@ exception disables updates until a new valid `initialpose` or clock epoch
 reinitializes it, preventing a partially applied motion from being retried.
 `processing_duration_ms` reports steady-clock processing time for the last
 accepted observation (TF lookup, preprocessing, filter update, and support checks,
-excluding publishing and time awaiting TF). `expansion_reset_count` counts all
-expansion resets since node startup.
+excluding publishing and time awaiting TF). `tracking_timing_stamp_ns` identifies
+the last timed tracking observation. Timer diagnostics can repeat its values;
+manual initial poses and global localization handoffs do not replace them.
+
+| Diagnostic | What it measures |
+| --- | --- |
+| `cloud_receive_age_ms` | ROS time from the cloud stamp to the subscription callback, including work before the node receives it. |
+| `cloud_queue_ms` | Steady time from the callback accepting that cloud until processing starts, including any wait for TF. |
+| `tf_lookup_ms`, `tracking_preprocess_ms`, `global_preprocess_ms` | The successful lookup and point sampling stages within the tracking update. The global value is zero when no separate global sample was prepared in that update. |
+| `filter_update_ms`, `query_preparation_ms`, `likelihood_ms` | Total particle update, CPU preparation of GPU queries, and scoring and normalization. With the CPU backend scoring also includes map queries. |
+| `vulkan_upload_ms`, `vulkan_submit_wait_ms`, `vulkan_readback_ms` | Host timings for the input copy, submission and fence wait, and output copy. The wait is not GPU-only execution time. These fields are zero on CPU. |
+| `support_check_ms`, `publish_estimate_ms`, `correction_age_ms` | Support and covariance checks, estimate publishing, and ROS-time age of the cloud after publishing. |
+
+The particle-stage timings include both evaluations if an expansion reset repeats
+scoring. `expansion_reset_count` counts all expansion resets since node startup.
 
 ### Global localization
 
 Global localization searches XY and yaw against the PCD map, then hands a
 successful estimate to the normal 6DoF tracker. It isn't a 6D global search.
+During normal tracking the node retains the latest validated cloud and its
+transforms without preparing a second sample. An on-demand search can prepare
+its own sample from that cloud without waiting for the next one.
 `global_localization.search_mode` accepts only `xy_yaw`; set
 `fixed_z_roll_pitch: [z, roll, pitch]` to the known height and attitude.
 All-zero `search_bounds: [0.0, 0.0, 0.0, 0.0]` uses the PCD XY bounds; otherwise supply
