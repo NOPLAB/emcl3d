@@ -34,6 +34,13 @@ struct Config {
   Eigen::Vector3d expansion_translation = Eigen::Vector3d::Constant(0.2);
   Eigen::Vector3d expansion_rotation = Eigen::Vector3d::Constant(0.1);
 };
+struct VulkanTimings {
+  double upload_ms = 0, submit_wait_ms = 0, readback_ms = 0;
+};
+struct FilterTimings {
+  double query_preparation_ms = 0, likelihood_ms = 0;
+  VulkanTimings vulkan;
+};
 class Map {
 public:
   explicit Map(const std::string &compute_backend = "cpu");
@@ -48,6 +55,8 @@ public:
   // Scalar diagnostics stay on CPU.
   void squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
       std::vector<float> &output, int num_threads = 1) const;
+  void squaredDistances(const std::vector<Eigen::Vector4f> &queries, float squared_limit,
+      std::vector<float> &output, int num_threads, VulkanTimings *timings) const;
   bool usesGpu() const;
   std::string deviceName() const;
   bool contains(const Eigen::Vector3d &point, double margin) const;
@@ -67,9 +76,11 @@ public:
   ParticleFilter(Config config, std::shared_ptr<const Map> map);
   void initialize(const Pose &pose, const Matrix6 &covariance);
   Estimate update(const Pose &odom_delta, const std::vector<Eigen::Vector3d> &points_base);
+  Estimate update(const Pose &odom_delta, const std::vector<Eigen::Vector3d> &points_base,
+      FilterTimings *timings);
   const std::vector<Particle> &particles() const { return particles_; }
 private:
-  double evaluate(const std::vector<Eigen::Vector3d> &points);
+  double evaluate(const std::vector<Eigen::Vector3d> &points, FilterTimings *timings);
   Estimate estimate() const;
   void resample();
   Config config_;

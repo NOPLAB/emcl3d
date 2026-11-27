@@ -61,7 +61,9 @@ TEST(Vulkan, FilterUpdatesPreserveCpuEstimatesAndRandomSequence) {
     delta.translation() = Eigen::Vector3d(0.01, -0.02, 0.005);
     delta.linear() = Eigen::AngleAxisd(0.01, Eigen::Vector3d::UnitY()).toRotationMatrix();
     for (int update = 0; update < 4; ++update) {
-      const auto a = cpu.update(delta, points), b = gpu.update(delta, points);
+      emcl3d::FilterTimings timings;
+      const auto a = cpu.update(delta, points), b = gpu.update(delta, points, &timings);
+      EXPECT_GT(timings.vulkan.submit_wait_ms, 0);
       ASSERT_TRUE(a.pose.matrix().isApprox(b.pose.matrix(), 1e-6));
       EXPECT_TRUE(a.covariance.isApprox(b.covariance, 1e-6));
       EXPECT_NEAR(a.ess, b.ess, 1e-4);

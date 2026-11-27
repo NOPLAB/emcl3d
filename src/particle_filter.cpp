@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 nop <noplab90@gmail.com>
 // SPDX-License-Identifier: LGPL-3.0-only
 #include "emcl3d/particle_filter.hpp"
+#include "timing.hpp"
 #include <Eigen/Eigenvalues>
 #include <algorithm>
 #include <cmath>
@@ -60,7 +61,7 @@ void ParticleFilter::initialize(const Pose &pose, const Matrix6 &covariance) {
   }
   bad_updates_ = 0;
 }
-double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
+double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points, FilterTimings *timings) {
   std::vector<double> logs(particles_.size());
   const double variance = config_.sigma_hit * config_.sigma_hit;
   const double radius = std::max(config_.inlier_distance, config_.sigma_hit * std::sqrt(
@@ -78,6 +79,7 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
     squared_limit = std::numeric_limits<float>::max();
   const bool gpu = map_->usesGpu();
   if (gpu) {
+    const auto query_started = timings ? detail::SteadyClock::now() : detail::SteadyClock::time_point{};
     queries_.resize(particles_.size() * points.size());
     #pragma omp parallel for schedule(static) num_threads(config_.num_threads)
     for (size_t i = 0; i < particles_.size(); ++i) {
@@ -87,8 +89,11 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
         query.w() = 0;
       }
     }
-    map_->squaredDistances(queries_, squared_limit, squared_distances_);
+    if (timings) timings->query_preparation_ms += detail::elapsed_ms(query_started);
+    map_->squaredDistances(queries_, squared_limit, squared_distances_,
+        config_.num_threads, timings ? &timings->vulkan : nullptr);
   }
+  const auto likelihood_started = timings ? detail::SteadyClock::now() : detail::SteadyClock::time_point{};
   int good = 0;
   // Each worker owns one score. Only the integer inlier count is reduced;
   // normalization and all random draws retain their serial order.
@@ -120,6 +125,7 @@ double ParticleFilter::evaluate(const std::vector<Eigen::Vector3d> &points) {
   double sum = 0;
   for (double &value : logs) { value = std::exp(value - maximum); sum += value; }
   for (size_t i = 0; i < particles_.size(); ++i) particles_[i].weight = logs[i] / sum;
+  if (timings) timings->likelihood_ms += detail::elapsed_ms(likelihood_started);
   return double(good) / particles_.size();
 }
 Estimate ParticleFilter::estimate() const {
@@ -162,6 +168,10 @@ void ParticleFilter::resample() {
 }
 Estimate ParticleFilter::update(
     const Pose &delta, const std::vector<Eigen::Vector3d> &points) {
+  return update(delta, points, nullptr);
+}
+Estimate ParticleFilter::update(
+    const Pose &delta, const std::vector<Eigen::Vector3d> &points, FilterTimings *timings) {
   if (particles_.empty()) throw std::logic_error("Filter is not initialized");
   if (!delta.matrix().allFinite() || points.size() < size_t(config_.min_valid_points) ||
       std::any_of(points.begin(), points.end(), [](const auto &p) { return !p.allFinite(); }))
@@ -180,7 +190,8 @@ Estimate ParticleFilter::update(
     noise.linear() = rotation(angle);
     p.pose = p.pose * delta * noise;
   }
-  double alpha = evaluate(points);
+  if (timings) *timings = {};
+  double alpha = evaluate(points, timings);
   bool supported = false;
   if (alpha < config_.alpha_threshold) {
     for (const auto &p : particles_) {
@@ -206,7 +217,7 @@ Estimate ParticleFilter::update(
       p.pose.linear() = rotation(angle) * p.pose.rotation();
       p.weight = 1.0 / particles_.size();
     }
-    alpha = evaluate(points);
+    alpha = evaluate(points, timings);
     bad_updates_ = 0;
   }
   auto result = estimate();

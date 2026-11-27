@@ -303,7 +303,8 @@ TEST_F(RosNodeTest, RejectsMalformedStorageWithoutPublishingPose) {
   EXPECT_FALSE(published_pose);
 }
 TEST_F(RosNodeTest, GlobalActionAppliesMatchedPoseAndReportsObservationStamp) {
-  configure_global({{"initial_pose", std::vector<double>{10, 10, 0, 0, 0, 0}}});
+  configure_global({{"initial_pose", std::vector<double>{10, 10, 0, 0, 0, 0}},
+    {"max_eval_points", 8}, {"global_localization.max_eval_points", 16}});
   using Action = emcl3d::Emcl3dNode::GlobalAction;
   auto client = rclcpp_action::create_client<Action>(driver, "emcl3d/global_localization");
   ASSERT_TRUE(client->wait_for_action_server(std::chrono::seconds(10)));
@@ -325,9 +326,36 @@ TEST_F(RosNodeTest, GlobalActionAppliesMatchedPoseAndReportsObservationStamp) {
     });
   discover(sub);
   const auto observation = cloud();
+  std::promise<diagnostic_msgs::msg::DiagnosticStatus> update_promise;
+  auto update = update_promise.get_future();
+  bool update_seen = false;
+  auto diagnostics_sub = driver->create_subscription<diagnostic_msgs::msg::DiagnosticArray>(
+    "diagnostics", 10, [&](const diagnostic_msgs::msg::DiagnosticArray & message) {
+      for (const auto & status : message.status) {
+        for (const auto & value : status.values) {
+          if (!update_seen && value.key == "accepted_clouds" && value.value == "1") {
+            update_seen = true;
+            update_promise.set_value(status);
+          }
+        }
+      }
+    });
+  discover(diagnostics_sub);
   cloud_pub->publish(observation);
   await(prior);
+  await(update);
+  const auto timings = update.get();
+  const auto diagnostic = [&timings](const std::string & key) {
+    const auto it = std::find_if(timings.values.begin(), timings.values.end(),
+      [&key](const auto & value) { return value.key == key; });
+    if (it == timings.values.end()) throw std::runtime_error("Missing diagnostic: " + key);
+    return it->value;
+  };
+  EXPECT_EQ(std::stoll(diagnostic("tracking_timing_stamp_ns")),
+    rclcpp::Time(observation.header.stamp).nanoseconds());
+  EXPECT_DOUBLE_EQ(std::stod(diagnostic("global_preprocess_ms")), 0);
 
+  // No new cloud arrives after the request; it must use the one tracked above.
   auto accepted = client->async_send_goal(Action::Goal{});
   await(accepted);
   ASSERT_NE(accepted.get(), nullptr);
